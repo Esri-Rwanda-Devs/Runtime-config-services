@@ -1,0 +1,116 @@
+{
+    "app":  {
+                "name":  "Education Mapping",
+                "shortName":  "Education",
+                "description":  "",
+                "eyebrow":  "Public schools workspace",
+                "homeTitle":  "Education Mapping Applications",
+                "homeLead":  "Choose a module on the left, then open a school mapping solution.",
+                "tagline":  "See how schools are distributed, where demand is rising, and how accessible infrastructure is across the country.",
+                "hero":  "/library.jpeg"
+            },
+    "organization":  {
+                         "name":  "Rwanda Space Agency",
+                         "legalName":  "Government of the Republic of Rwanda",
+                         "copyrightYear":  2026
+                     },
+    "contact":  {
+                    "heading":  "Contact",
+                    "email":  "",
+                    "agency":  "",
+                    "phone":  "",
+                    "phoneLabel":  ""
+                },
+    "footer":  {
+                   "blurb":  "Supporting school planning and access through reliable geospatial information on public education."
+               },
+    "legal":  {
+                  "disclaimer":  {
+                                     "title":  "Data Disclaimer",
+                                     "body":  [
+                                                  "{{app.name}} publishes geospatial information for planning, operations, and public awareness.",
+                                                  "Maps and statistics are provided as-is. Always confirm critical decisions with the responsible institution and the source applicationâ€™s own refresh time."
+                                              ]
+                                 },
+                  "privacy":  {
+                                  "title":  "Privacy",
+                                  "body":  [
+                                               "This portal uses your account to sign you in and to load mapping applications you are authorised to view.",
+                                               "Session details stay on this origin. Do not share your username or password."
+                                           ]
+                              },
+                  "terms":  {
+                                "title":  "Terms of Use",
+                                "body":  [
+                                             "Use this portal for official and lawful purposes only. Do not attempt to bypass access controls or scrape restricted layers.",
+                                             "Content remains the property of {{organization.legalName}} and its partner institutions."
+                                         ]
+                            },
+                  "accessibility":  {
+                                        "title":  "Accessibility",
+                                        "body":  [
+                                                     "Pages are built for keyboard use and common assistive technologies. Mapping viewers follow the accessibility of the source ArcGIS application.",
+                                                     "If a page or map is hard to use, contact the institution listed in the footer."
+                                                 ]
+                                    }
+              },
+    "modules":  [
+                    {
+                        "id":  "public-schools",
+                        "name":  "School Mapping",
+                        "icon":  "school",
+                        "description":  "Distribution, demand, demographics, and infrastructure access for public schools.",
+                        "image":  "/educa.webp",
+                        "apps":  [
+                                     {
+                                         "id":  "schools-distribution",
+                                         "name":  "Schools Distribution and Profiling ",
+                                         "footerLabel":  "Schools Distribution",
+                                         "description":  "Map public schools, enrolment, and facility profiles nationwide.",
+                                         "type":  "Experience",
+                                         "image":  "/image2.jpg",
+                                         "icon":  "graduation-cap",
+                                         "kind":  "experience",
+                                         "portalItemId":  "33e5ba3cf0854d77a288e89459f8c994",
+                                         "portalHostKey":  "gh"
+                                     },
+                                     {
+                                         "id":  "primary-school-distribution",
+                                         "name":  "Primary Schools Distribution and Profiling",
+                                         "footerLabel":  "Primary Schools Distribution and Profiling",
+                                         "description":  "Map primary school distribution nationwide.",
+                                         "type":  "Dashboard",
+                                         "image":  "/image2.jpg",
+                                         "icon":  "route",
+                                         "kind":  "dashboard",
+                                         "portalItemId":  "65aad58a703f415498a8b07fe5714666",
+                                         "portalHostKey":  "gh"
+                                     },
+                                     {
+                                         "id":  "schools-demand-analysis",
+                                         "name":  "Primary Schools Demand Analysis",
+                                         "footerLabel":  "Schools Demand Analysis",
+                                         "description":  "Compare schools demand with learner population.",
+                                         "type":  "Dashboard",
+                                         "image":  "/educa.webp",
+                                         "icon":  "users",
+                                         "kind":  "dashboard",
+                                         "portalItemId":  "bd5c2ec4219648ab979f9121c8c88f20",
+                                         "portalHostKey":  "gh"
+                                     },
+                                     {
+                                         "id":  "school-gap-analysis",
+                                         "name":  "Primary Schools Gap Analysis",
+                                         "footerLabel":  "School Gap Analysis",
+                                         "description":  "Identify gaps in school coverage and access.",
+                                         "type":  "Dashboard",
+                                         "image":  "/image3.jpg",
+                                         "icon":  "layers",
+                                         "kind":  "dashboard",
+                                         "portalItemId":  "67cd3164220c46b5800f75ceebd36983",
+                                         "portalHostKey":  "gh"
+                                     }
+                                 ]
+                    }
+                ]
+}
