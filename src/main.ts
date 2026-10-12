@@ -43,7 +43,8 @@ function assertJwtSecret(
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: the portal proxy forwards POST bodies byte-for-byte.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const configService = app.get(ConfigService);
 
   const nodeEnv = configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
