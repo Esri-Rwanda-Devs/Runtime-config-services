@@ -12,9 +12,18 @@ import {
   ArcgisPortalClient,
   PortalNetworkError,
 } from '../portal/arcgis-portal.client';
-import { collectPortalHostKeysFromConfig } from '../portal/portal-host-keys';
 
 export const APP_SESSION_COOKIE = 'rc_app_session';
+/**
+ * Each app keeps its own cookie (rc_app_session_<appKey>) so several apps on
+ * one origin can be signed in at once. The unsuffixed cookie is still read
+ * (and cleared) for sessions issued before the split.
+ */
+export function appSessionCookieName(appKey: string): string {
+  return `${APP_SESSION_COOKIE}_${appKey}`;
+}
+const APP_SESSION_COOKIE_NAME_PATTERN =
+  /^rc_app_session_[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** Only the consumer auth + proxy routes need the cookie. */
 export const APP_SESSION_COOKIE_PATH = '/api/v1/';
 const SESSION_TYPE = 'app-session';
@@ -51,7 +60,7 @@ export class AppSessionService {
   }): Promise<{ cookie: string; session: AppSession }> {
     const application = await this.prisma.application.findUnique({
       where: { key: input.appKey },
-      select: { isActive: true, config: true },
+      select: { isActive: true },
     });
     if (!application) {
       throw new NotFoundException(
@@ -62,19 +71,15 @@ export class AppSessionService {
       throw new ForbiddenException('Application is inactive');
     }
 
+    // Users always sign in with their account on the login portal (GeoHub),
+    // even when the app's dashboards live on other portals; which portals the
+    // proxy may reach is still decided per app by its config.
     const loginHost = (
       this.configService.get<string>('APP_LOGIN_PORTAL_HOST') ||
       DEFAULT_LOGIN_PORTAL_HOST
     )
       .trim()
       .toLowerCase();
-    if (
-      !collectPortalHostKeysFromConfig(application.config).includes(loginHost)
-    ) {
-      throw new ForbiddenException(
-        'Sign-in is not available for this application',
-      );
-    }
     const credential = await this.prisma.portalCredential.findUnique({
       where: { key: loginHost },
       select: { portalUrl: true, isActive: true },
@@ -125,7 +130,9 @@ export class AppSessionService {
     cookieHeader: string | undefined,
     appKey: string,
   ): Promise<AppSession | null> {
-    const raw = readCookie(cookieHeader, APP_SESSION_COOKIE);
+    const raw =
+      readCookie(cookieHeader, appSessionCookieName(appKey)) ||
+      readCookie(cookieHeader, APP_SESSION_COOKIE);
     if (!raw) return null;
     try {
       const payload = await this.jwt.verifyAsync<{
@@ -155,10 +162,35 @@ export class AppSessionService {
     }
   }
 
-  cookieHeader(value: string, origin: string, maxAgeSec: number): string {
+  cookieHeader(
+    name: string,
+    value: string,
+    origin: string,
+    maxAgeSec: number,
+  ): string {
     const secure = origin.startsWith('https:') ? '; Secure' : '';
     const age = Math.max(0, Math.floor(maxAgeSec));
-    return `${APP_SESSION_COOKIE}=${value}; HttpOnly; Path=${APP_SESSION_COOKIE_PATH}; SameSite=Lax; Max-Age=${age}${secure}`;
+    return `${name}=${value}; HttpOnly; Path=${APP_SESSION_COOKIE_PATH}; SameSite=Lax; Max-Age=${age}${secure}`;
+  }
+
+  /**
+   * Expiring Set-Cookie headers for logout: the app's own cookie (or, without
+   * an appKey, every app session cookie the browser sent) plus the legacy one.
+   */
+  clearCookieHeaders(
+    cookieHeader: string | undefined,
+    origin: string,
+    appKey?: string,
+  ): string[] {
+    const names = new Set<string>([APP_SESSION_COOKIE]);
+    if (appKey) {
+      names.add(appSessionCookieName(appKey));
+    } else {
+      for (const name of cookieNames(cookieHeader)) {
+        if (APP_SESSION_COOKIE_NAME_PATTERN.test(name)) names.add(name);
+      }
+    }
+    return [...names].map((name) => this.cookieHeader(name, '', origin, 0));
   }
 
   private sessionMinutes(): number {
@@ -178,6 +210,14 @@ export class AppSessionService {
       'test-only-insecure-jwt-secret-32b!';
     return `${base}::${SESSION_TYPE}`;
   }
+}
+
+function cookieNames(header: string | undefined): string[] {
+  if (!header) return [];
+  return header
+    .split(';')
+    .map((part) => part.slice(0, Math.max(0, part.indexOf('='))).trim())
+    .filter((name) => name.length > 0);
 }
 
 export function readCookie(

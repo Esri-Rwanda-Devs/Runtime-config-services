@@ -30,6 +30,10 @@ describe('app session + portal proxy (HTTP)', () => {
   let generateToken: jest.Mock;
   let issueToken: jest.Mock;
   let fetchMock: jest.SpyInstance;
+  let prismaMock: {
+    application: { findUnique: jest.Mock };
+    portalCredential: { findUnique: jest.Mock };
+  };
 
   beforeEach(async () => {
     generateToken = jest
@@ -42,7 +46,7 @@ describe('app session + portal proxy (HTTP)', () => {
       portalUrl: `${ORIGIN}/portal`,
       portalHostKey: 'gh',
     });
-    const prisma = {
+    const prisma = (prismaMock = {
       application: {
         findUnique: jest.fn().mockResolvedValue({
           isActive: true,
@@ -54,7 +58,7 @@ describe('app session + portal proxy (HTTP)', () => {
           .fn()
           .mockResolvedValue({ portalUrl: `${ORIGIN}/portal`, isActive: true }),
       },
-    };
+    });
     const env: Record<string, string> = {
       ALLOWED_ORIGINS: `${ORIGIN},https://localhost:5181`,
       JWT_SECRET: 'x'.repeat(40),
@@ -95,11 +99,11 @@ describe('app session + portal proxy (HTTP)', () => {
     await app.close();
   });
 
-  async function signIn(): Promise<string> {
+  async function signIn(appKey = APP): Promise<string> {
     const res = await request(app.getHttpServer())
       .post('/api/v1/app-auth/login')
       .set('Origin', ORIGIN)
-      .send({ appKey: APP, username: 'alice', password: 'pw' })
+      .send({ appKey, username: 'alice', password: 'pw' })
       .expect(200);
     const setCookie = String(res.headers['set-cookie']);
     return setCookie.split(';')[0];
@@ -120,11 +124,41 @@ describe('app session + portal proxy (HTTP)', () => {
     });
     expect(JSON.stringify(res.body)).not.toContain('user-token');
     const cookie = String(res.headers['set-cookie']);
-    expect(cookie).toMatch(/^rc_app_session=/);
+    expect(cookie).toMatch(new RegExp(`^rc_app_session_${APP}=`));
     expect(cookie).toContain('HttpOnly');
     expect(cookie).toContain('Secure');
     expect(cookie).toContain('SameSite=Lax');
     expect(cookie).toContain('Path=/api/v1/');
+  });
+
+  it('login works for an app whose dashboards are on other portals only', async () => {
+    prismaMock.application.findUnique.mockResolvedValueOnce({ isActive: true });
+    await request(app.getHttpServer())
+      .post('/api/v1/app-auth/login')
+      .set('Origin', ORIGIN)
+      .send({ appKey: 'health-mapping', username: 'alice', password: 'pw' })
+      .expect(200);
+    expect(prismaMock.portalCredential.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { key: 'gh' } }),
+    );
+  });
+
+  it('login is refused for an inactive app or a missing login portal', async () => {
+    prismaMock.application.findUnique.mockResolvedValueOnce({
+      isActive: false,
+    });
+    await request(app.getHttpServer())
+      .post('/api/v1/app-auth/login')
+      .set('Origin', ORIGIN)
+      .send({ appKey: APP, username: 'alice', password: 'pw' })
+      .expect(403);
+    prismaMock.portalCredential.findUnique.mockResolvedValueOnce(null);
+    await request(app.getHttpServer())
+      .post('/api/v1/app-auth/login')
+      .set('Origin', ORIGIN)
+      .send({ appKey: APP, username: 'alice', password: 'pw' })
+      .expect(403);
+    expect(generateToken).not.toHaveBeenCalled();
   });
 
   it('login rejects a disallowed or missing Origin', async () => {
@@ -167,6 +201,76 @@ describe('app session + portal proxy (HTTP)', () => {
       .set('Origin', ORIGIN)
       .expect(200);
     expect(String(out.headers['set-cookie'])).toContain('Max-Age=0');
+  });
+
+  it('keeps each app signed in separately on one origin', async () => {
+    const infra = await signIn();
+    const health = await signIn('health-mapping');
+    expect(health).toMatch(/^rc_app_session_health-mapping=/);
+    const both = `${infra}; ${health}`;
+    await request(app.getHttpServer())
+      .get(`/api/v1/app-auth/session?appKey=${APP}`)
+      .set('Cookie', both)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/api/v1/app-auth/session?appKey=health-mapping')
+      .set('Cookie', both)
+      .expect(200);
+    // Another app's cookie never opens this app, even under this app's name.
+    const healthValue = health.split('=').slice(1).join('=');
+    await request(app.getHttpServer())
+      .get(`/api/v1/app-auth/session?appKey=${APP}`)
+      .set('Cookie', `rc_app_session_${APP}=${healthValue}`)
+      .expect(401);
+  });
+
+  it('still accepts a session cookie issued before the per-app split', async () => {
+    const value = (await signIn()).split('=').slice(1).join('=');
+    await request(app.getHttpServer())
+      .get(`/api/v1/app-auth/session?appKey=${APP}`)
+      .set('Cookie', `rc_app_session=${value}`)
+      .expect(200);
+  });
+
+  it('logout with appKey clears only that app; without it clears every app', async () => {
+    const infra = await signIn();
+    const health = await signIn('health-mapping');
+    const one = await request(app.getHttpServer())
+      .post(`/api/v1/app-auth/logout?appKey=${APP}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', `${infra}; ${health}`)
+      .expect(200);
+    const cleared = ([] as string[]).concat(one.headers['set-cookie'] ?? []);
+    expect(cleared).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          new RegExp(`^rc_app_session_${APP}=;.*Max-Age=0`),
+        ),
+        expect.stringMatching(/^rc_app_session=;.*Max-Age=0/),
+      ]),
+    );
+    expect(cleared.join(' ')).not.toContain('health-mapping');
+
+    const all = await request(app.getHttpServer())
+      .post('/api/v1/app-auth/logout')
+      .set('Origin', ORIGIN)
+      .set('Cookie', `${infra}; ${health}`)
+      .expect(200);
+    const names = ([] as string[])
+      .concat(all.headers['set-cookie'] ?? [])
+      .map((c) => c.split('=')[0]);
+    expect(names.sort()).toEqual(
+      [
+        'rc_app_session',
+        `rc_app_session_${APP}`,
+        'rc_app_session_health-mapping',
+      ].sort(),
+    );
+
+    await request(app.getHttpServer())
+      .post('/api/v1/app-auth/logout?appKey=Bad Key')
+      .set('Origin', ORIGIN)
+      .expect(400);
   });
 
   it('rejects a forged / admin-signed cookie', async () => {

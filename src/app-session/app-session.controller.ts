@@ -16,8 +16,12 @@ import { ConfigService } from '@nestjs/config';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Response } from 'express';
-import { AppKeyBodyDto, AppLoginBodyDto } from './dto/app-login.dto';
-import { AppSessionService } from './app-session.service';
+import {
+  AppKeyBodyDto,
+  AppLoginBodyDto,
+  OptionalAppKeyQueryDto,
+} from './dto/app-login.dto';
+import { AppSessionService, appSessionCookieName } from './app-session.service';
 
 export function parseAllowedOrigins(value: string | undefined): string[] {
   if (!value?.trim()) {
@@ -62,6 +66,7 @@ export class AppSessionController {
     res.setHeader(
       'Set-Cookie',
       this.sessions.cookieHeader(
+        appSessionCookieName(session.appKey),
         cookie,
         approved,
         (session.expiresAt - Date.now()) / 1000,
@@ -96,13 +101,21 @@ export class AppSessionController {
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Clear the app session cookie' })
+  @ApiOperation({
+    summary:
+      'Clear the app session cookie (all app sessions when appKey is omitted)',
+  })
   logout(
+    @Query() query: OptionalAppKeyQueryDto,
     @Headers('origin') origin: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ) {
     const approved = this.requireAllowedOrigin(origin);
-    res.setHeader('Set-Cookie', this.sessions.cookieHeader('', approved, 0));
+    res.setHeader(
+      'Set-Cookie',
+      this.sessions.clearCookieHeaders(cookie, approved, query.appKey),
+    );
     return { authenticated: false };
   }
 

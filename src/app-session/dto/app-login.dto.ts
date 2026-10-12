@@ -1,6 +1,12 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 
 export class AppKeyBodyDto {
   @ApiProperty({ example: 'infrastructure-mapping' })
@@ -31,4 +37,18 @@ export class AppLoginBodyDto extends AppKeyBodyDto {
   @IsNotEmpty()
   @MaxLength(1024)
   password!: string;
+}
+
+export class OptionalAppKeyQueryDto {
+  @ApiPropertyOptional({ example: 'infrastructure-mapping' })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+    message: 'appKey must be a lowercase kebab-case identifier',
+  })
+  appKey?: string;
 }
