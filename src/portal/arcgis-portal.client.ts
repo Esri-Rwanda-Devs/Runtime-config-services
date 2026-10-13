@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { portalFetch } from './portal-fetch';
 
 export type GeneratePortalTokenInput = {
   portalUrl: string;
@@ -39,7 +40,7 @@ export class ArcgisPortalClient {
 
     let response: Response;
     try {
-      response = await fetch(`${portalRoot}/sharing/rest/generateToken`, {
+      response = await portalFetch(`${portalRoot}/sharing/rest/generateToken`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body,
