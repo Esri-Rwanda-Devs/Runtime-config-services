@@ -1,0 +1,15 @@
+{
+  "branding": {
+    "typography": {
+      "fontFamily": "Inter, system-ui, sans-serif",
+      "body": { "size": "16px", "lineHeight": "1.55" },
+      "sidebarBrand": { "size": "12.5px", "weight": 800 },
+      "navGroup": { "size": "12px", "weight": 600 },
+      "navItem": { "size": "12px", "weight": 400, "activeWeight": 600 },
+      "sidebarAction": { "size": "13px", "weight": 600 },
+      "eyebrow": { "size": "12px", "weight": 500 },
+      "button": { "size": "15px", "weight": 600 },
+      "loginTitle": { "size": "clamp(1.35rem, 2.4vw, 1.85rem)", "weight": 700 }
+    }
+  }
+}

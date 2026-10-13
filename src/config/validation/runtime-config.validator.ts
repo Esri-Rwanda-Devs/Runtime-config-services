@@ -1,3 +1,5 @@
+import { validateTypography } from '../typography';
+
 export type RuntimeConfigValidationResult =
   { valid: true; error: null } | { valid: false; error: string };
 
@@ -301,6 +303,10 @@ function validateBranding(value: unknown): string | null {
   if (logoError) return logoError;
   const faviconError = optionalString('branding', value, 'favicon');
   if (faviconError) return faviconError;
+  if ('typography' in value) {
+    const typographyError = validateTypography(value.typography);
+    if (typographyError) return typographyError;
+  }
   return null;
 }
 

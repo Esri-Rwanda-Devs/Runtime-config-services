@@ -6,6 +6,7 @@ const prisma = new PrismaClient();
 
 const EDUCATION_MAPPING_KEY = 'education-mapping';
 const EDUCATION_MAPPING_NAME = 'Education Mapping';
+const SHARED_THEME_KEY = 'shared-theme';
 
 async function main() {
   const configPath = join(
@@ -33,6 +34,28 @@ async function main() {
   });
 
   console.log(`Seeded application: ${EDUCATION_MAPPING_KEY}`);
+
+  // Shared typography default for every app. Create-only: admin edits to the
+  // row are never overwritten by a re-seed.
+  const sharedThemeConfig = JSON.parse(
+    readFileSync(
+      join(__dirname, 'seed-data', 'shared-theme.config.json'),
+      'utf-8',
+    ),
+  ) as Prisma.InputJsonValue;
+
+  await prisma.application.upsert({
+    where: { key: SHARED_THEME_KEY },
+    update: {},
+    create: {
+      key: SHARED_THEME_KEY,
+      name: 'Shared Theme',
+      config: sharedThemeConfig,
+      isActive: true,
+    },
+  });
+
+  console.log(`Seeded application: ${SHARED_THEME_KEY}`);
 }
 
 main()

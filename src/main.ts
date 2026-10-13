@@ -95,7 +95,7 @@ async function bootstrap() {
       [
         'Central runtime configuration service for frontend applications.',
         '',
-        'Public: GET /health, GET /api/v1/config/:appKey, POST /api/v1/auth/login, Swagger UI.',
+        'Public: GET /health, GET /api/v1/config/:appKey, GET /api/v1/theme/typography.css, POST /api/v1/auth/login, Swagger UI.',
         'Consumer portal auth: POST /api/v1/portal-auth/token with { appKey, portalHostKey } (Origin allowlist + rate limit + config host authorization; issues short-lived ArcGIS tokens).',
         '',
         'Admin endpoints under /api/v1/admin/** require Bearer JWT from an active AdminUser.',

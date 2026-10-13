@@ -47,6 +47,16 @@ export class RuntimeBrandingDto {
 
   @ApiPropertyOptional({ example: '/favicon.svg' })
   favicon?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Shared text styles. Roles: body {size, lineHeight}, sidebarBrand, navGroup, sidebarAction, eyebrow, button, loginTitle {size, weight}, navItem {size, weight, activeWeight}; plus fontFamily. Values from the active "shared-theme" application are applied underneath this object.',
+    example: {
+      fontFamily: 'Inter, system-ui, sans-serif',
+      navItem: { size: '12px', weight: 400, activeWeight: 600 },
+    },
+  })
+  typography?: Record<string, unknown>;
 }
 
 export class RuntimeOrganizationDto {

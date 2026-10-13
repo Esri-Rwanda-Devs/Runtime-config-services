@@ -80,6 +80,72 @@ describe('ConfigService', () => {
     expect(result).not.toHaveProperty('updatedAt');
   });
 
+  it('applies the shared-theme typography under the app typography', async () => {
+    prisma.application.findFirst
+      .mockResolvedValueOnce({
+        config: {
+          ...sampleConfig,
+          branding: {
+            logo: '/l.png',
+            typography: { navItem: { size: '13px' } },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        config: {
+          app: { name: 'Shared Theme' },
+          branding: {
+            logo: '/shared.png',
+            typography: {
+              fontFamily: 'Inter, sans-serif',
+              navItem: { size: '12px', weight: 400 },
+            },
+          },
+        },
+      });
+
+    await expect(
+      service.getConfigByAppKey('education-mapping'),
+    ).resolves.toEqual({
+      ...sampleConfig,
+      branding: {
+        logo: '/l.png',
+        typography: {
+          fontFamily: 'Inter, sans-serif',
+          navItem: { size: '13px', weight: 400 },
+        },
+      },
+    });
+    expect(prisma.application.findFirst).toHaveBeenLastCalledWith({
+      where: { key: 'shared-theme', isActive: true },
+      select: { config: true },
+    });
+  });
+
+  it('returns the app config unchanged when there is no shared theme', async () => {
+    prisma.application.findFirst
+      .mockResolvedValueOnce({ config: sampleConfig })
+      .mockResolvedValueOnce(null);
+
+    await expect(
+      service.getConfigByAppKey('education-mapping'),
+    ).resolves.toEqual(sampleConfig);
+  });
+
+  it('returns the shared-theme document itself without a second lookup', async () => {
+    const sharedConfig = {
+      branding: { typography: { button: { weight: 600 } } },
+    };
+    prisma.application.findFirst.mockResolvedValueOnce({
+      config: sharedConfig,
+    });
+
+    await expect(service.getConfigByAppKey('shared-theme')).resolves.toBe(
+      sharedConfig,
+    );
+    expect(prisma.application.findFirst).toHaveBeenCalledTimes(1);
+  });
+
   it('may expose portalHostKey but never credentials or tokens', async () => {
     const configWithHost = {
       modules: [
