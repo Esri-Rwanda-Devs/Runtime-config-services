@@ -412,9 +412,6 @@ operations (`BLOCKED_PATH` in `portal-proxy.rewrite.ts`). Static portal files
 are cached, with browser cache headers, brotli/gzip compression and an
 in-memory LRU. StoryMap links are left unproxied.
 
-`gis.rbc.gov.rw` has an expired certificate. `src/portal/portal-fetch.ts` pins
-an exception for that one certificate fingerprint until 2026-11-15. Remove it
-once RBC renews.
 
 ### Shared typography
 

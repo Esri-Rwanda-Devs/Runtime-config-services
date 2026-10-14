@@ -9,7 +9,6 @@ import { MonitorOutcome, Prisma } from '@prisma/client';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { PrismaService } from '../prisma/prisma.service';
 import { PortalAuthTokenService } from '../portal/portal-auth-token.service';
-import { portalFetch } from '../portal/portal-fetch';
 import { MonitorAlertService } from './monitor-alert.service';
 import { planAlerts, type AlertPlan } from './monitor-alerts';
 import {
@@ -254,7 +253,7 @@ export class MonitorRunnerService
       timeoutMs: this.settings.timeoutMs,
       referer: this.settings.referer,
       appFetch,
-      portalFetch: (url, init) => portalFetch(url, init),
+      portalFetch: (url, init) => fetch(url, init),
       inspectCertificate,
       issueToken: async (input) => {
         const issued = await this.tokenService.issueToken(input);

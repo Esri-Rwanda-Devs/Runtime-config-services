@@ -11,7 +11,6 @@ import {
 import { ApiExcludeController } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { PortalAuthTokenService } from '../portal/portal-auth-token.service';
-import { portalFetch } from '../portal/portal-fetch';
 import { isPortalHostKeyFormat } from '../portal/portal-host-keys';
 import { AppSessionService } from './app-session.service';
 import {
@@ -165,7 +164,7 @@ export class PortalProxyController {
 
     let upstream: globalThis.Response;
     try {
-      upstream = await portalFetch(target, init);
+      upstream = await fetch(target, init);
     } catch (error) {
       const timeout = (error as Error)?.name === 'TimeoutError';
       res.status(timeout ? 504 : 502).json({
