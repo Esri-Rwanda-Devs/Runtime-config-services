@@ -63,6 +63,12 @@ npm run start:dev
 | `ALLOWED_ORIGINS` | Yes for browsers | Comma-separated CORS allowlist |
 | `JWT_SECRET` | Yes | High-entropy JWT signing secret (≥ 32 chars) |
 | `JWT_EXPIRES_IN` | No | Access token lifetime (default `1h`) |
+| `PORTAL_CREDENTIAL_ENCRYPTION_KEY` | Yes | 32-byte key (base64 or hex) encrypting stored portal passwords |
+| `PORTAL_TOKEN_EXPIRATION_MINUTES` | No | Lifetime of broker-issued portal tokens (default `60`) |
+| `APP_LOGIN_PORTAL_HOST` | No | Portal credential key users sign in against (default `gh`) |
+| `APP_SESSION_MINUTES` | No | App sign-in session lifetime (default `480`) |
+| `PORTAL_PROXY_CACHE_MB` | No | Memory for cached static portal files in the proxy (default `64`, `0` = off) |
+| `MONITOR_*` | No | Status monitor and email alerts, see [Status monitor](#status-monitor) |
 
 Example:
 
@@ -370,6 +376,72 @@ edit/delete API in this milestone.
 4. Paste the `accessToken` as a Bearer token
 5. Call Admin Applications / Admin Audit endpoints
 
+## Portal access for the mapping apps
+
+The static mapping apps (`EA Apps/*-app`, built with `npm run build:static`)
+have no backend of their own. This service gives them sign-in and portal
+access. The full design is in `EA Apps/docs/architecture.md`.
+
+### Portal credentials and the token broker
+
+Admins store one service account per portal host key (`gh`, `gh2`, `rbc`,
+`rdb`, …) under `/api/v1/admin/portal-credentials`. Passwords are encrypted with
+`PORTAL_CREDENTIAL_ENCRYPTION_KEY` and never returned.
+
+`POST /api/v1/portal-auth/token` `{ appKey, portalHostKey }` issues a
+short-lived token. It requires an allowed `Origin`, an active app whose config
+references that host, and an active credential. Tokens are cached until 60 s
+before expiry and are bound to the caller's origin. The broker is limited to
+30 calls per minute.
+
+### App sign-in
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/app-auth/login` | `{ appKey, username, password }`: verifies the user's own portal account on `APP_LOGIN_PORTAL_HOST`, discards that token, sets HttpOnly `rc_app_session_<appKey>` (Path `/api/v1/`, SameSite=Lax) |
+| `GET` | `/api/v1/app-auth/session?appKey=` | Current session or `401` |
+| `POST` | `/api/v1/app-auth/logout?appKey=` | Clears that app's session (all, without `appKey`) |
+
+### Portal proxy
+
+`ALL /api/v1/portal-proxy/<appKey>/<hostKey>/<path on the portal origin>`
+requires the app session. It attaches a broker token server-side, rewrites
+portal URLs back to the proxy, and scrubs the token from bodies and `Location`.
+It refuses a foreign `Origin` and blocks sign-in, admin and content-changing
+operations (`BLOCKED_PATH` in `portal-proxy.rewrite.ts`). Static portal files
+are cached, with browser cache headers, brotli/gzip compression and an
+in-memory LRU. StoryMap links are left unproxied.
+
+`gis.rbc.gov.rw` has an expired certificate. `src/portal/portal-fetch.ts` pins
+an exception for that one certificate fingerprint until 2026-11-15. Remove it
+once RBC renews.
+
+### Shared typography
+
+`GET /api/v1/theme/typography.css` renders the `shared-theme` application's
+`branding.typography` as CSS. `GET /api/v1/config/:appKey` merges it under each
+app's own `branding.typography`. See `EA Apps/docs/typography.md`.
+
+## Status monitor
+
+`src/monitoring/` checks, on a schedule, the database, each app URL, TLS
+certificates, each portal, token issuance per (app, host) and every configured
+dashboard, experience and Survey123 item. Results appear on the admin console's
+**Status** page and are stored in `MonitorRun` / `MonitorCheckResult`.
+Optional email alerts are sent when a check turns red (2 failures in a row),
+recovers, or a certificate nears expiry.
+
+| Method | Path (all require admin JWT) | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/admin/monitoring/status` | Latest result per check, uptime, settings |
+| `GET` | `/api/v1/admin/monitoring/history?checkType=&targetKey=&hours=` | One check over time (≤ 168 h) |
+| `POST` | `/api/v1/admin/monitoring/run` | Start a run now (`202`; `409` if running; 3/min) |
+| `POST` | `/api/v1/admin/monitoring/test-alert` | Send a test email (`400` not configured, `502` SMTP failure) |
+
+Settings (`MONITOR_ENABLED`, `MONITOR_APP_URLS`, `MONITOR_SMTP_*`, …) are
+documented in `.env.example`. How to read the page and act on red checks is in
+`EA Apps/docs/monitoring.md`.
+
 ## How Education Mapping will connect
 
 Education Mapping currently loads `public/config.json` at runtime.
@@ -409,7 +481,6 @@ Covered cases:
 - OAuth / OIDC / GeoHub login for admins
 - multiple roles / application-level ACL
 - DELETE application
-- admin UI
 - configuration restore / rollback from audit snapshots
 - audit retention / archive jobs
 - login audit

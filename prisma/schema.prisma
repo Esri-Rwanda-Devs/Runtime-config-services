@@ -85,3 +85,47 @@ model ApplicationAuditLog {
   @@index([actorEmail, createdAt(sort: Desc)])
   @@index([action, createdAt(sort: Desc)])
 }
+
+enum MonitorOutcome {
+  PASS
+  WARN
+  FAIL
+  SKIP
+}
+
+/// One scheduled or manual pass of the status monitor.
+model MonitorRun {
+  id          String    @id @default(uuid()) @db.Uuid
+  trigger     String
+  triggeredBy String?
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  total       Int       @default(0)
+  failed      Int       @default(0)
+
+  results MonitorCheckResult[]
+
+  @@index([startedAt(sort: Desc)])
+}
+
+/// Outcome of one monitor check. `detail` is sanitized: never a token or password.
+model MonitorCheckResult {
+  id                  String         @id @default(uuid()) @db.Uuid
+  runId               String         @db.Uuid
+  checkType           String
+  targetKey           String
+  targetLabel         String
+  outcome             MonitorOutcome
+  latencyMs           Int?
+  detail              String?
+  meta                Json?
+  consecutiveFailures Int            @default(0)
+  failingSince        DateTime?
+  checkedAt           DateTime       @default(now())
+
+  run MonitorRun @relation(fields: [runId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([checkType, targetKey, checkedAt(sort: Desc)])
+  @@index([checkedAt])
+  @@index([runId])
+}

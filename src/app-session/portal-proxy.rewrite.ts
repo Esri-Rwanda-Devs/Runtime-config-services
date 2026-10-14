@@ -5,6 +5,8 @@
  * loading through it, and the service-account token is never sent onward.
  */
 
+import { keepStoryMapLinks } from './storymap-links';
+
 export const PORTAL_PROXY_ROUTE = '/api/v1/portal-proxy';
 
 /** Above this size, JS bodies only get absolute-URL rewrites (as in the apps). */
@@ -127,17 +129,23 @@ export function shouldRewriteBody(contentType: string): boolean {
   return /text\/html|javascript|json|css|text\/plain|xml/i.test(contentType);
 }
 
-/** Point portal URLs in a text payload at the proxy and drop the token. */
-export function rewritePayload(
-  text: string,
-  options: {
-    portalOrigin: string;
-    prefix: string;
-    contentType: string;
-    restPath: string;
-    token: string | null;
-  },
-): string {
+interface RewriteOptions {
+  portalOrigin: string;
+  prefix: string;
+  contentType: string;
+  restPath: string;
+  token: string | null;
+}
+
+/**
+ * Point portal URLs in a text payload at the proxy and drop the token.
+ * StoryMap links are the exception and stay on their portal (see storymap-links).
+ */
+export function rewritePayload(text: string, options: RewriteOptions): string {
+  return keepStoryMapLinks(text, (t) => rewritePortalUrls(t, options));
+}
+
+function rewritePortalUrls(text: string, options: RewriteOptions): string {
   const { portalOrigin, prefix, contentType, restPath, token } = options;
   let next = scrubToken(text, token);
   if (!next) return next;

@@ -1,3 +1,10 @@
+import {
+  get as httpGet,
+  type IncomingHttpHeaders,
+  type Server,
+} from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
@@ -372,6 +379,129 @@ describe('app session + portal proxy (HTTP)', () => {
       .expect(401);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  /** GET with the raw bytes as sent (superagent would decompress them). */
+  async function rawGet(
+    path: string,
+    headers: Record<string, string>,
+  ): Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer }> {
+    const server = app.getHttpServer() as Server;
+    if (!server.listening) {
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+    }
+    const { port } = server.address() as AddressInfo;
+    return new Promise((resolve, reject) => {
+      httpGet({ host: '127.0.0.1', port, path, headers }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks),
+          }),
+        );
+      }).on('error', reject);
+    });
+  }
+
+  const BUNDLE = `${PREFIX}/portal/apps/dashboards/assets/vendor-f9627cdb61e6c03f68d01f4b39fc0478.js`;
+  const bundleSource = () =>
+    `var portal="${ORIGIN}/portal";var t="${SERVICE_TOKEN}";` +
+    'console.log(1);'.repeat(500);
+
+  it('proxy lets the browser cache static bundles, compresses them and serves repeats from memory', async () => {
+    const cookie = await signIn();
+    fetchMock.mockResolvedValueOnce(
+      new Response(bundleSource(), {
+        status: 200,
+        headers: {
+          'content-type': 'application/javascript',
+          'cache-control': 'private',
+          etag: '"upstream"',
+        },
+      }),
+    );
+
+    const first = await rawGet(BUNDLE, {
+      cookie,
+      'accept-encoding': 'gzip, deflate, br',
+    });
+    expect(first.status).toBe(200);
+    expect(first.headers['cache-control']).toBe(
+      'private, max-age=31536000, immutable',
+    );
+    expect(first.headers['content-encoding']).toBe('br');
+    expect(first.headers.vary).toContain('Accept-Encoding');
+    expect(first.headers.etag).not.toBe('"upstream"');
+    const text = brotliDecompressSync(first.body).toString();
+    expect(text).toContain(`var portal="${PREFIX}/portal"`);
+    expect(text).not.toContain(SERVICE_TOKEN);
+    expect(first.body.length).toBeLessThan(text.length / 4);
+
+    issueToken.mockClear();
+    const again = await rawGet(BUNDLE, { cookie, 'accept-encoding': 'gzip' });
+    expect(again.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(issueToken).not.toHaveBeenCalled();
+    expect(again.headers['content-encoding']).toBe('gzip');
+    expect(gunzipSync(again.body).toString()).toBe(text);
+
+    // A cached copy is still only for a signed-in session.
+    await request(app.getHttpServer()).get(BUNDLE).expect(401);
+  });
+
+  it('proxy keeps portal data uncached but compressed', async () => {
+    const cookie = await signIn();
+    const json = JSON.stringify({
+      url: `${ORIGIN}/portal`,
+      pad: 'x'.repeat(4000),
+    });
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response(json, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    const res = await rawGet(
+      `${PREFIX}/portal/sharing/rest/portals/self?f=json`,
+      {
+        cookie,
+        'accept-encoding': 'gzip',
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('private, no-store');
+    expect(res.headers['content-encoding']).toBe('gzip');
+    expect(gunzipSync(res.body).toString()).toContain(
+      `"url":"${PREFIX}/portal"`,
+    );
+
+    await request(app.getHttpServer())
+      .get(`${PREFIX}/portal/sharing/rest/portals/self?f=json`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('proxy sends bodies uncompressed to clients that do not accept it', async () => {
+    const cookie = await signIn();
+    fetchMock.mockResolvedValueOnce(
+      new Response(bundleSource(), {
+        status: 200,
+        headers: { 'content-type': 'application/javascript' },
+      }),
+    );
+    const res = await request(app.getHttpServer())
+      .get(BUNDLE)
+      .set('Cookie', cookie)
+      .set('Accept-Encoding', 'identity')
+      .expect(200);
+    expect(res.headers['content-encoding']).toBeUndefined();
+    expect(res.text).toContain(`var portal="${PREFIX}/portal"`);
+  });
 });
 
 describe('portal proxy rewrite helpers', () => {
@@ -420,6 +550,28 @@ describe('portal proxy rewrite helpers', () => {
     expect(out).toContain(`"e":"${prefix.replaceAll('/', '\\/')}\\/server"`);
     expect(out).toContain(`"p":"${prefix}/portal/x"`);
     expect(out).not.toContain(prefix + prefix);
+  });
+
+  it('leaves StoryMap links on their portal, since a story cannot run under the proxy', () => {
+    const story = `${ORIGIN}/portal/apps/storymaps/stories/0ad919ea544d408da446c518ab8da0e8`;
+    const out = rewritePayload(
+      JSON.stringify({
+        staticUrl: story,
+        encoded: encodeURIComponent(story),
+        dashboard: `${ORIGIN}/portal/apps/dashboards/abc`,
+      }),
+      {
+        portalOrigin: ORIGIN,
+        prefix: PREFIX,
+        contentType: 'application/json',
+        restPath: 'portal/sharing/rest/content/items/x/data',
+        token: null,
+      },
+    );
+    const json = JSON.parse(out) as Record<string, string>;
+    expect(json.staticUrl).toBe(story);
+    expect(json.encoded).toBe(encodeURIComponent(story));
+    expect(json.dashboard).toBe(`${PREFIX}/portal/apps/dashboards/abc`);
   });
 
   it('rewrites root-relative redirects', () => {

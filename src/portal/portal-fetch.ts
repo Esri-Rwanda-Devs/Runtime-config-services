@@ -90,7 +90,12 @@ function agentFor(exception: ExpiredCertificateException): Agent {
   if (agent) return agent;
   // Chain verification is done in pinnedCertificateProblem instead of by
   // OpenSSL rejection, so the one known expired certificate can pass.
-  const base = buildConnector({ rejectUnauthorized: false });
+  // No TLS session resumption: a resumed session presents no certificate, so
+  // the fingerprint check would refuse every other connection.
+  const base = buildConnector({
+    rejectUnauthorized: false,
+    maxCachedSessions: 0,
+  });
   agent = new Agent({
     connect: (opts, callback) =>
       base(opts, (error, socket) => {

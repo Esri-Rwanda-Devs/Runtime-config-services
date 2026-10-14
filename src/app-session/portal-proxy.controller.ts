@@ -15,6 +15,14 @@ import { portalFetch } from '../portal/portal-fetch';
 import { isPortalHostKeyFormat } from '../portal/portal-host-keys';
 import { AppSessionService } from './app-session.service';
 import {
+  type CachedAsset,
+  chooseEncoding,
+  encodeBody,
+  isCompressible,
+  ProxyAssetCache,
+  staticAssetPolicy,
+} from './portal-proxy.cache';
+import {
   isProxyRequestAllowed,
   proxyPrefix,
   resolveUpstreamUrl,
@@ -25,6 +33,8 @@ import {
 } from './portal-proxy.rewrite';
 
 const PROXY_TIMEOUT_MS = 120_000;
+/** Memory for rewritten static portal files (PORTAL_PROXY_CACHE_MB, 0 = off). */
+const ASSET_CACHE_MB = Number(process.env.PORTAL_PROXY_CACHE_MB ?? 64);
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const SKIP_HEADERS = new Set([
   'x-frame-options',
@@ -39,6 +49,11 @@ const SKIP_HEADERS = new Set([
   'connection',
   'set-cookie',
   'cache-control',
+  // The body is rewritten and re-encoded here; Express derives its own ETag
+  // from what is actually sent.
+  'etag',
+  'last-modified',
+  'vary',
 ]);
 
 type RawBodyRequest = Request & { rawBody?: Buffer };
@@ -54,6 +69,10 @@ type RawBodyRequest = Request & { rawBody?: Buffer };
 @ApiExcludeController()
 @Controller('api/v1/portal-proxy')
 export class PortalProxyController {
+  private readonly assets = new ProxyAssetCache(
+    Math.max(0, ASSET_CACHE_MB) * 1024 * 1024,
+  );
+
   constructor(
     private readonly sessions: AppSessionService,
     private readonly tokens: PortalAuthTokenService,
@@ -93,6 +112,18 @@ export class PortalProxyController {
 
     if (!isProxyRequestAllowed(req.method, restPath)) {
       throw new ForbiddenException('This portal operation is not available');
+    }
+
+    // Static portal files already fetched for this app + host: no token, no
+    // upstream call. The session above has been checked all the same.
+    const assetKey =
+      req.method === 'GET'
+        ? ProxyAssetCache.key(appKey, hostKey, restPath, search)
+        : null;
+    const cached = assetKey ? this.assets.get(assetKey) : null;
+    if (assetKey && cached) {
+      await this.sendAsset(req, res, assetKey, cached);
+      return;
     }
 
     const issued = await this.tokens.issueToken({
@@ -178,10 +209,82 @@ export class PortalProxyController {
       return;
     }
 
-    res.status(upstream.status);
+    const forwarded: Record<string, string> = {};
     upstream.headers.forEach((value, key) => {
-      if (!SKIP_HEADERS.has(key.toLowerCase())) res.setHeader(key, value);
+      if (!SKIP_HEADERS.has(key.toLowerCase())) forwarded[key] = value;
     });
-    res.send(body);
+    const payload = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
+
+    const policy = staticAssetPolicy(
+      req.method,
+      restPath,
+      upstream.status,
+      upstream.headers.get('cache-control'),
+    );
+    if (policy && assetKey) {
+      const entry: CachedAsset = {
+        status: upstream.status,
+        headers: forwarded,
+        cacheControl: policy.cacheControl,
+        contentType: type,
+        body: payload,
+        encoded: {},
+        expiresAt: Date.now() + policy.ttlMs,
+      };
+      this.assets.set(assetKey, entry);
+      await this.sendAsset(req, res, assetKey, entry);
+      return;
+    }
+
+    res.status(upstream.status);
+    for (const [key, value] of Object.entries(forwarded)) {
+      res.setHeader(key, value);
+    }
+    const encoding = chooseEncoding(
+      payload.length,
+      type,
+      req.headers['accept-encoding'],
+    );
+    if (isCompressible(type)) res.setHeader('Vary', 'Accept-Encoding');
+    if (encoding) {
+      res.setHeader('Content-Encoding', encoding);
+      res.send(await encodeBody(payload, encoding));
+      return;
+    }
+    res.send(payload);
+  }
+
+  /** Send a static portal file, browser-cacheable and compressed once. */
+  private async sendAsset(
+    req: Request,
+    res: Response,
+    key: string,
+    entry: CachedAsset,
+  ): Promise<void> {
+    res.status(entry.status);
+    for (const [name, value] of Object.entries(entry.headers)) {
+      res.setHeader(name, value);
+    }
+    res.setHeader('Cache-Control', entry.cacheControl);
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    if (isCompressible(entry.contentType)) {
+      res.setHeader('Vary', 'Accept-Encoding');
+    }
+    const encoding = chooseEncoding(
+      entry.body.length,
+      entry.contentType,
+      req.headers['accept-encoding'],
+    );
+    if (!encoding) {
+      res.send(entry.body);
+      return;
+    }
+    let encoded = entry.encoded[encoding];
+    if (!encoded) {
+      encoded = await encodeBody(entry.body, encoding);
+      this.assets.addEncoding(key, encoding, encoded);
+    }
+    res.setHeader('Content-Encoding', encoding);
+    res.send(encoded);
   }
 }

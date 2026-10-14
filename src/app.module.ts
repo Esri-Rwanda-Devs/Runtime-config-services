@@ -6,6 +6,7 @@ import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { ConfigModule } from './config/config.module';
 import { HealthModule } from './health/health.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
 import { PortalModule } from './portal/portal.module';
 import { PrismaModule } from './prisma/prisma.module';
 
@@ -22,6 +23,7 @@ import { PrismaModule } from './prisma/prisma.module';
     PortalModule,
     AppSessionModule,
     HealthModule,
+    MonitoringModule,
   ],
 })
 export class AppModule {}
