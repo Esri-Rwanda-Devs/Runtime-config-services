@@ -426,7 +426,12 @@ certificates, each portal, token issuance per (app, host) and every configured
 dashboard, experience and Survey123 item. Results appear on the admin console's
 **Status** page and are stored in `MonitorRun` / `MonitorCheckResult`.
 Optional email alerts are sent when a check turns red (2 failures in a row),
-recovers, or a certificate nears expiry.
+recovers, or a certificate nears expiry. An optional daily summary email
+(`MONITOR_SUMMARY_HOUR`) lists critical and warning checks and recent
+recoveries; `MonitorSummary` records each send so only one instance sends it.
+All monitor emails share one table-based HTML layout
+(`src/monitoring/monitor-email-template.ts`); preview them with
+`npm run monitor:preview-emails -- <output dir>`.
 
 | Method | Path (all require admin JWT) | Purpose |
 | --- | --- | --- |
