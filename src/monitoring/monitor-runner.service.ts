@@ -6,7 +6,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MonitorOutcome, Prisma } from '@prisma/client';
-import { Agent, fetch as undiciFetch } from 'undici';
 import { PrismaService } from '../prisma/prisma.service';
 import { PortalAuthTokenService } from '../portal/portal-auth-token.service';
 import { MonitorAlertService } from './monitor-alert.service';
@@ -27,6 +26,7 @@ import { sanitizeDetail } from './monitor-sanitize';
 import { readMonitorSettings, type MonitorSettings } from './monitor-settings';
 import { buildMonitorTargets, isLoopbackHost } from './monitor-targets';
 import { inspectCertificate } from './tls-probe';
+import { loopbackFetch } from './loopback-fetch';
 
 /** pg advisory lock id that serializes run claims across service instances. */
 const RUN_CLAIM_LOCK_ID = 7301004211;
@@ -107,14 +107,11 @@ export function withDeadline<T>(
 // Dev app servers on this machine use self-signed certificates. Only the
 // loopback app-reachability request skips verification; it sends no
 // credentials, and loopback hosts get no certificate check.
-const loopbackAgent = new Agent({ connect: { rejectUnauthorized: false } });
-
 function appFetch(url: string, init: RequestInit): Promise<Response> {
   if (isLoopbackHost(new URL(url).hostname)) {
-    return undiciFetch(url, {
-      ...(init as object),
-      dispatcher: loopbackAgent,
-    }) as unknown as Promise<Response>;
+    return loopbackFetch(url, init, isLoopbackHost, (next, nextInit) =>
+      fetch(next, nextInit),
+    );
   }
   return fetch(url, init);
 }
