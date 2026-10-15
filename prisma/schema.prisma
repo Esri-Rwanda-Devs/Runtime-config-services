@@ -129,3 +129,14 @@ model MonitorCheckResult {
   @@index([checkedAt])
   @@index([runId])
 }
+
+/// One row per daily summary email; the unique slot stops two service
+/// instances from both sending it.
+model MonitorSummary {
+  id        String    @id @default(uuid()) @db.Uuid
+  slot      DateTime  @unique
+  claimedAt DateTime  @default(now())
+  sentAt    DateTime?
+  ok        Boolean?
+  error     String?
+}

@@ -1,4 +1,10 @@
 import type { MonitorOutcomeValue } from './monitor-checks';
+import {
+  formatDuration,
+  formatUtc,
+  renderMonitorEmail,
+  type EmailTone,
+} from './monitor-email-template';
 
 export type AlertRow = {
   checkType: string;
@@ -111,45 +117,69 @@ const CHECK_LABELS: Record<string, string> = {
   item: 'Dashboard item',
 };
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function describeTarget(row: AlertRow): string {
+export function describeTarget(
+  row: Pick<AlertRow, 'checkType' | 'targetLabel' | 'meta'>,
+): string {
   const appKey = row.meta?.appKey;
   const where =
     row.checkType === 'item' && typeof appKey === 'string'
       ? ` (${appKey})`
       : '';
-  return `${CHECK_LABELS[row.checkType] ?? row.checkType}: ${row.targetLabel}${where}`;
+  return `${CHECK_LABELS[row.checkType] ?? row.checkType}: ${row.targetLabel || 'unnamed'}${where}`;
 }
 
-function formatTime(date: Date): string {
-  return `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-}
-
-type Section = { title: string; rows: AlertRow[]; showSince: boolean };
+type Section = {
+  title: string;
+  tone: EmailTone;
+  rows: AlertRow[];
+  showSince: boolean;
+};
 
 export type AlertEmail = { subject: string; text: string; html: string };
 
+const plural = (count: number, word: string) =>
+  `${count} ${word}${count === 1 ? '' : 's'}`;
+
+function sinceNote(row: AlertRow, now: Date): string | null {
+  if (!row.failingSince) return null;
+  const duration = formatDuration(now.getTime() - row.failingSince.getTime());
+  const failures =
+    row.consecutiveFailures > 0
+      ? ` · ${plural(row.consecutiveFailures, 'failed check')} in a row`
+      : '';
+  return `Failing since ${formatUtc(row.failingSince)}${duration ? ` (${duration})` : ''}${failures}`;
+}
+
 export function composeAlertEmail(
   plan: AlertPlan,
-  options: { statusUrl: string | null; subjectPrefix?: string },
+  options: { statusUrl: string | null; subjectPrefix?: string; now?: Date },
 ): AlertEmail {
+  const now = options.now ?? new Date();
   const sections: Section[] = [
-    { title: 'Now failing', rows: plan.failing, showSince: true },
+    {
+      title: 'Now failing',
+      tone: 'critical' as const,
+      rows: plan.failing,
+      showSince: true,
+    },
     {
       title: 'Certificates expiring soon',
+      tone: 'warning' as const,
       rows: plan.expiring,
       showSince: false,
     },
-    { title: 'Still failing', rows: plan.reminders, showSince: true },
-    { title: 'Recovered', rows: plan.recovered, showSince: false },
+    {
+      title: 'Still failing',
+      tone: 'critical' as const,
+      rows: plan.reminders,
+      showSince: true,
+    },
+    {
+      title: 'Recovered',
+      tone: 'healthy' as const,
+      rows: plan.recovered,
+      showSince: false,
+    },
   ].filter((section) => section.rows.length > 0);
 
   const counts = [
@@ -163,44 +193,91 @@ export function composeAlertEmail(
   const subject = `${options.subjectPrefix ?? '[GeoHub status]'} ${counts.join(', ')}`;
 
   const textParts: string[] = [];
-  const htmlParts: string[] = [];
   for (const section of sections) {
     textParts.push(`${section.title} (${section.rows.length})`);
-    htmlParts.push(
-      `<h3 style="margin:16px 0 6px;font-size:15px">${escapeHtml(section.title)} (${section.rows.length})</h3><ul style="margin:0;padding-left:20px">`,
-    );
     for (const row of section.rows) {
       const since =
         section.showSince && row.failingSince
-          ? `failing since ${formatTime(row.failingSince)}`
+          ? `failing since ${formatUtc(row.failingSince)}`
           : null;
       const extra = [row.detail, since].filter(Boolean).join(' · ');
       textParts.push(`- ${describeTarget(row)}${extra ? `\n  ${extra}` : ''}`);
-      htmlParts.push(
-        `<li style="margin:4px 0"><strong>${escapeHtml(describeTarget(row))}</strong>${
-          extra
-            ? `<br><span style="color:#52525b">${escapeHtml(extra)}</span>`
-            : ''
-        }</li>`,
-      );
     }
     textParts.push('');
-    htmlParts.push('</ul>');
   }
-
-  const footer = options.statusUrl
-    ? `Status page: ${options.statusUrl}`
-    : 'See the Status page in Runtime Config administration.';
-  textParts.push(footer);
-  htmlParts.push(
+  textParts.push(
     options.statusUrl
-      ? `<p style="margin-top:18px"><a href="${escapeHtml(options.statusUrl)}">Open the Status page</a></p>`
-      : `<p style="margin-top:18px">${escapeHtml(footer)}</p>`,
+      ? `Status page: ${options.statusUrl}`
+      : 'See the Status page in Runtime Config administration.',
   );
 
+  const red = plan.failing.length + plan.reminders.length;
+  const tone: EmailTone =
+    red > 0 ? 'critical' : plan.expiring.length > 0 ? 'warning' : 'healthy';
+  const title =
+    red > 0
+      ? `${plural(red, 'check')} ${red === 1 ? 'is' : 'are'} failing`
+      : plan.expiring.length > 0
+        ? `${plural(plan.expiring.length, 'certificate')} expiring soon`
+        : `${plural(plan.recovered.length, 'check')} recovered`;
+  const metric = (label: string, count: number, active: EmailTone) => ({
+    label,
+    value: String(count),
+    tone: count > 0 ? active : ('neutral' as const),
+  });
+
+  const html = renderMonitorEmail({
+    kind: 'Real-time alert',
+    title,
+    intro:
+      'The latest status run found the changes below. Checks that stay the same are not repeated until the next reminder.',
+    tone,
+    preheader: counts.join(', '),
+    generatedAt: now,
+    metrics: [
+      metric('Now failing', plan.failing.length, 'critical'),
+      metric('Still failing', plan.reminders.length, 'critical'),
+      metric('Expiring', plan.expiring.length, 'warning'),
+      metric('Recovered', plan.recovered.length, 'healthy'),
+    ],
+    sections: sections.map((section) => ({
+      title: section.title,
+      tone: section.tone,
+      items: section.rows.map((row) => ({
+        name: describeTarget(row),
+        tone: section.tone,
+        detail: row.detail,
+        note: section.showSince ? sinceNote(row, now) : null,
+      })),
+    })),
+    statusUrl: options.statusUrl,
+    footerNote:
+      'You receive this because your address is in the monitor alert recipients (MONITOR_ALERT_TO).',
+  });
+
+  return { subject, text: textParts.join('\n'), html };
+}
+
+export function composeTestEmail(
+  requestedBy: string,
+  options: { statusUrl: string | null; now?: Date },
+): AlertEmail {
+  const now = options.now ?? new Date();
+  const who = requestedBy.trim() || 'an administrator';
   return {
-    subject,
-    text: textParts.join('\n'),
-    html: `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#18181b">${htmlParts.join('')}</div>`,
+    subject: '[GeoHub status] Test email',
+    text: `Email alerts from the GeoHub status monitor are working.\nRequested by ${who}.`,
+    html: renderMonitorEmail({
+      kind: 'Test email',
+      title: 'Email alerts are working',
+      intro: `This test was requested by ${who}. Real alerts and summaries will arrive in this format.`,
+      tone: 'healthy',
+      preheader: 'Email alerts from the GeoHub status monitor are working.',
+      generatedAt: now,
+      sections: [],
+      statusUrl: options.statusUrl,
+      footerNote:
+        'You receive this because your address is in the monitor alert recipients (MONITOR_ALERT_TO).',
+    }),
   };
 }

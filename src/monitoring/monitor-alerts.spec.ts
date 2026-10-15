@@ -161,7 +161,19 @@ describe('composeAlertEmail', () => {
         reminders: [],
         recovered: [row({ targetLabel: 'RBC' })],
       },
-      { statusUrl: 'https://gh.space.gov.rw/runtime-config/status' },
+      {
+        statusUrl: 'https://gh.space.gov.rw/runtime-config/status',
+        now: NOW,
+      },
+    );
+    expect(email.html).toContain('1 check is failing');
+    expect(email.html).toContain('>Critical</span>');
+    expect(email.html).toContain('>Healthy</span>');
+    expect(email.html).toContain(
+      'Failing since 2026-10-14 11:55 UTC (5 min) · 2 failed checks in a row',
+    );
+    expect(email.html).toContain(
+      'href="https://gh.space.gov.rw/runtime-config/status"',
     );
     expect(email.subject).toBe('[GeoHub status] 1 failing, 1 recovered');
     expect(email.text).toContain(

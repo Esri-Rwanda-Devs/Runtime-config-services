@@ -93,6 +93,9 @@ export class MonitoringService {
           ? this.alerts.settings.to
           : [],
         remindHours: this.alerts.settings.remindMs / (60 * 60_000),
+        summaryHourUtc: this.alerts.settings.configured
+          ? this.alerts.settings.summaryHourUtc
+          : null,
         lastDelivery: this.alerts.lastDelivery(),
       },
       running: this.runner.isRunning() || activeRun !== null,

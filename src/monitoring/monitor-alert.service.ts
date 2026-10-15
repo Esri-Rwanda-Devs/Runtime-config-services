@@ -8,13 +8,15 @@ import {
 import {
   alertCount,
   composeAlertEmail,
+  composeTestEmail,
+  type AlertEmail,
   type AlertPlan,
 } from './monitor-alerts';
 import { sanitizeDetail } from './monitor-sanitize';
 
 export type AlertDelivery = {
   at: string;
-  kind: 'alert' | 'test';
+  kind: 'alert' | 'test' | 'summary';
   ok: boolean;
   /** Sanitized SMTP error; never contains the SMTP password. */
   error: string | null;
@@ -42,6 +44,9 @@ export class MonitorAlertService {
     if (this.settings.error) {
       this.logger.warn(`Email alerts off: ${this.settings.error}`);
     }
+    if (this.settings.summaryError) {
+      this.logger.warn(`Daily summary off: ${this.settings.summaryError}`);
+    }
   }
 
   lastDelivery(): AlertDelivery | null {
@@ -59,11 +64,15 @@ export class MonitorAlertService {
 
   /** Sends a test email; resolves with the delivery result. */
   async sendTest(requestedBy: string): Promise<AlertDelivery> {
-    return this.deliver('test', {
-      subject: '[GeoHub status] Test email',
-      text: `Email alerts from the GeoHub status monitor are working.\nRequested by ${requestedBy}.`,
-      html: `<p>Email alerts from the GeoHub status monitor are working.</p><p>Requested by ${requestedBy.replace(/[<>&"']/g, '')}.</p>`,
-    });
+    return this.deliver(
+      'test',
+      composeTestEmail(requestedBy, { statusUrl: this.settings.statusUrl }),
+    );
+  }
+
+  /** Sends a composed daily summary; resolves with the delivery result. */
+  async sendSummary(email: AlertEmail): Promise<AlertDelivery> {
+    return this.deliver('summary', email);
   }
 
   /** Exposed for tests. */
@@ -91,7 +100,7 @@ export class MonitorAlertService {
 
   private async deliver(
     kind: AlertDelivery['kind'],
-    email: { subject: string; text: string; html: string },
+    email: AlertEmail,
   ): Promise<AlertDelivery> {
     const at = new Date().toISOString();
     try {

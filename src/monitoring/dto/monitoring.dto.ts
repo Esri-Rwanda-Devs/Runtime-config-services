@@ -51,7 +51,7 @@ export class MonitorAlertDeliveryDto {
   @ApiProperty()
   at!: string;
 
-  @ApiProperty({ enum: ['alert', 'test'] })
+  @ApiProperty({ enum: ['alert', 'test', 'summary'] })
   kind!: string;
 
   @ApiProperty()
@@ -75,6 +75,13 @@ export class MonitorAlertsDto {
     description: 'Reminder interval while a check stays red; 0 = off',
   })
   remindHours!: number;
+
+  @ApiProperty({
+    nullable: true,
+    type: Number,
+    description: 'UTC hour of the daily summary email; null = off',
+  })
+  summaryHourUtc!: number | null;
 
   @ApiProperty({ type: MonitorAlertDeliveryDto, nullable: true })
   lastDelivery!: MonitorAlertDeliveryDto | null;

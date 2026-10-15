@@ -20,6 +20,10 @@ export type MonitorAlertSettings = {
   remindMs: number;
   /** Link to the admin Status page, included in emails when set. */
   statusUrl: string | null;
+  /** UTC hour (0-23) of the daily summary email; null = no summary. */
+  summaryHourUtc: number | null;
+  /** Why MONITOR_SUMMARY_HOUR was ignored, when it was. */
+  summaryError: string | null;
 };
 
 type EnvReader = (key: string) => string | undefined;
@@ -68,6 +72,12 @@ export function readMonitorAlertSettings(get: EnvReader): MonitorAlertSettings {
     }
   }
 
+  const summaryRaw = get('MONITOR_SUMMARY_HOUR')?.trim() ?? '';
+  const summaryHour = /^\d{1,2}$/.test(summaryRaw)
+    ? Number.parseInt(summaryRaw, 10)
+    : NaN;
+  const summaryValid = summaryHour >= 0 && summaryHour <= 23;
+
   const settings: MonitorAlertSettings = {
     configured: false,
     error: null,
@@ -86,6 +96,11 @@ export function readMonitorAlertSettings(get: EnvReader): MonitorAlertSettings {
         ? remindHours * 60 * 60_000
         : 24 * 60 * 60_000,
     statusUrl,
+    summaryHourUtc: summaryValid ? summaryHour : null,
+    summaryError:
+      summaryRaw && !summaryValid
+        ? 'MONITOR_SUMMARY_HOUR must be a whole hour from 0 to 23'
+        : null,
   };
 
   if (!host && !from && to.length === 0) return settings;
