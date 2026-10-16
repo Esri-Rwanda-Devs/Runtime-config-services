@@ -300,4 +300,67 @@ describe('PortalAuthTokenService (AUTH-03 host-aware)', () => {
       }),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
+
+  it('concurrent requests for one app + host share a single lookup', async () => {
+    prisma.application.findUnique.mockResolvedValue(application);
+    prisma.portalCredential.findUnique.mockResolvedValue(ghCredential);
+    const input = {
+      appKey: 'education-mapping',
+      portalHostKey: 'gh',
+      origin: 'https://localhost:5174',
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => service.issueToken(input)),
+    );
+
+    expect(results).toHaveLength(50);
+    expect(results.every((r) => r.portalUrl === ghCredential.portalUrl)).toBe(
+      true,
+    );
+    expect(prisma.application.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.portalCredential.findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not keep lookups once settled (deactivation applies at once)', async () => {
+    prisma.application.findUnique.mockResolvedValue(application);
+    prisma.portalCredential.findUnique.mockResolvedValue(ghCredential);
+    const input = {
+      appKey: 'education-mapping',
+      portalHostKey: 'gh',
+      origin: 'https://localhost:5174',
+    };
+
+    await service.issueToken(input);
+    prisma.application.findUnique.mockResolvedValue({
+      ...application,
+      isActive: false,
+    });
+
+    await expect(service.issueToken(input)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(prisma.application.findUnique).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed shared lookup rejects every waiter and is not reused', async () => {
+    prisma.application.findUnique.mockRejectedValueOnce(new Error('pool'));
+    prisma.application.findUnique.mockResolvedValue(application);
+    prisma.portalCredential.findUnique.mockResolvedValue(ghCredential);
+    const input = {
+      appKey: 'education-mapping',
+      portalHostKey: 'gh',
+      origin: 'https://localhost:5174',
+    };
+
+    const settled = await Promise.allSettled([
+      service.issueToken(input),
+      service.issueToken(input),
+    ]);
+    expect(settled.map((s) => s.status)).toEqual(['rejected', 'rejected']);
+
+    await expect(service.issueToken(input)).resolves.toMatchObject({
+      portalHostKey: 'gh',
+    });
+  });
 });

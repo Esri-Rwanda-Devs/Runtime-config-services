@@ -28,6 +28,14 @@ type CacheEntry = {
   referer: string;
 };
 
+type PortalGrant = {
+  id: string;
+  key: string;
+  portalUrl: string;
+  username: string;
+  encryptedPassword: string;
+};
+
 const DEFAULT_EXPIRATION_MINUTES = 60;
 /** Refresh when fewer than this many ms remain. */
 const CACHE_SKEW_MS = 60_000;
@@ -35,6 +43,12 @@ const CACHE_SKEW_MS = 60_000;
 @Injectable()
 export class PortalAuthTokenService {
   private readonly cache = new Map<string, CacheEntry>();
+  /**
+   * Authorization lookups in flight, keyed by app + host. A proxied portal
+   * page fires hundreds of requests at once; they share one pair of queries
+   * instead of draining the connection pool. Nothing is kept once settled.
+   */
+  private readonly pendingGrants = new Map<string, Promise<PortalGrant>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -59,47 +73,7 @@ export class PortalAuthTokenService {
       throw new ForbiddenException('Portal host is not available');
     }
 
-    const application = await this.prisma.application.findUnique({
-      where: { key: input.appKey },
-      select: {
-        id: true,
-        key: true,
-        isActive: true,
-        config: true,
-      },
-    });
-
-    if (!application) {
-      throw new NotFoundException(
-        `Application with key "${input.appKey}" was not found`,
-      );
-    }
-
-    if (!application.isActive) {
-      throw new ForbiddenException('Application is inactive');
-    }
-
-    const referencedHosts = collectPortalHostKeysFromConfig(application.config);
-    if (!referencedHosts.includes(portalHostKey)) {
-      // Do not reveal whether the PortalCredential key exists.
-      throw new ForbiddenException('Portal host is not available');
-    }
-
-    const credential = await this.prisma.portalCredential.findUnique({
-      where: { key: portalHostKey },
-      select: {
-        id: true,
-        key: true,
-        portalUrl: true,
-        username: true,
-        encryptedPassword: true,
-        isActive: true,
-      },
-    });
-
-    if (!credential || !credential.isActive) {
-      throw new ForbiddenException('Portal host is not available');
-    }
+    const credential = await this.resolveGrant(input.appKey, portalHostKey);
 
     const referer = input.origin;
     const cacheKey = `${credential.id}::${referer}`;
@@ -161,6 +135,70 @@ export class PortalAuthTokenService {
       }
       throw error;
     }
+  }
+
+  private resolveGrant(
+    appKey: string,
+    portalHostKey: string,
+  ): Promise<PortalGrant> {
+    const key = `${appKey}::${portalHostKey}`;
+    let pending = this.pendingGrants.get(key);
+    if (!pending) {
+      pending = this.loadGrant(appKey, portalHostKey).finally(() => {
+        this.pendingGrants.delete(key);
+      });
+      this.pendingGrants.set(key, pending);
+    }
+    return pending;
+  }
+
+  private async loadGrant(
+    appKey: string,
+    portalHostKey: string,
+  ): Promise<PortalGrant> {
+    const application = await this.prisma.application.findUnique({
+      where: { key: appKey },
+      select: {
+        id: true,
+        key: true,
+        isActive: true,
+        config: true,
+      },
+    });
+
+    if (!application) {
+      throw new NotFoundException(
+        `Application with key "${appKey}" was not found`,
+      );
+    }
+
+    if (!application.isActive) {
+      throw new ForbiddenException('Application is inactive');
+    }
+
+    const referencedHosts = collectPortalHostKeysFromConfig(application.config);
+    if (!referencedHosts.includes(portalHostKey)) {
+      // Do not reveal whether the PortalCredential key exists.
+      throw new ForbiddenException('Portal host is not available');
+    }
+
+    const credential = await this.prisma.portalCredential.findUnique({
+      where: { key: portalHostKey },
+      select: {
+        id: true,
+        key: true,
+        portalUrl: true,
+        username: true,
+        encryptedPassword: true,
+        isActive: true,
+      },
+    });
+
+    if (!credential || !credential.isActive) {
+      throw new ForbiddenException('Portal host is not available');
+    }
+
+    return credential;
   }
 
   /** Clear cached tokens for a credential (e.g. after password rotation). */
