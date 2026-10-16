@@ -147,19 +147,24 @@ export class ProxyAssetCache {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** One entry per app + host + file (+ query, minus any token). */
+  /**
+   * One entry per app + host + file (+ query, minus any token), and per
+   * browser origin: rewritten bodies carry absolute URLs on that origin.
+   */
   static key(
     appKey: string,
     hostKey: string,
     restPath: string,
     search = '',
+    origin = '',
   ): string {
     const query = new URLSearchParams(search);
     for (const name of [...query.keys()]) {
       if (name.toLowerCase() === 'token') query.delete(name);
     }
     const suffix = query.size ? `?${query.toString()}` : '';
-    return `${appKey}|${hostKey}|/${restPath.replace(/^\/+/, '')}${suffix}`;
+    const scope = origin ? `${origin}|` : '';
+    return `${scope}${appKey}|${hostKey}|/${restPath.replace(/^\/+/, '')}${suffix}`;
   }
 
   get size(): number {

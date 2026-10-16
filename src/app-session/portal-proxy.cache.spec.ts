@@ -121,6 +121,17 @@ describe('ProxyAssetCache', () => {
     );
   });
 
+  it('keys by browser origin, since rewritten bodies carry it', () => {
+    expect(
+      ProxyAssetCache.key('a', 'gh', 'x.js', '', 'https://one.example'),
+    ).toBe('https://one.example|a|gh|/x.js');
+    expect(
+      ProxyAssetCache.key('a', 'gh', 'x.js', '', 'https://one.example'),
+    ).not.toBe(
+      ProxyAssetCache.key('a', 'gh', 'x.js', '', 'https://two.example'),
+    );
+  });
+
   it('drops expired entries', () => {
     let now = 1_000;
     const cache = new ProxyAssetCache(1000, 1000, () => now);

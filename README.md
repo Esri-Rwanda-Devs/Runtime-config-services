@@ -407,6 +407,10 @@ before expiry and are bound to the caller's origin. The broker is limited to
 `ALL /api/v1/portal-proxy/<appKey>/<hostKey>/<path on the portal origin>`
 requires the app session. It attaches a broker token server-side, rewrites
 portal URLs back to the proxy, and scrubs the token from bodies and `Location`.
+Absolute portal URLs stay absolute on the session origin
+(`https://<app origin>/api/v1/portal-proxy/...`): ArcGIS IdentityManager matches
+a federated server's `owningSystemUrl` to its portal by full URL, and an
+origin-less one sends it into an endless sign-in loop that freezes the page.
 It refuses a foreign `Origin` and blocks sign-in, admin and content-changing
 operations (`BLOCKED_PATH` in `portal-proxy.rewrite.ts`). Static portal files
 are cached, with browser cache headers, brotli/gzip compression and an

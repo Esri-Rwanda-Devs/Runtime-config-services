@@ -135,6 +135,14 @@ interface RewriteOptions {
   contentType: string;
   restPath: string;
   token: string | null;
+  /**
+   * Browser origin the proxy is served on (the session origin). Absolute
+   * portal URLs stay absolute on it: ArcGIS IdentityManager matches a
+   * server's owningSystemUrl against the portal it knows by full URL, and an
+   * origin-less one never matches, sending it into an endless sign-in loop
+   * that freezes the page.
+   */
+  appOrigin?: string;
 }
 
 /**
@@ -150,13 +158,14 @@ function rewritePortalUrls(text: string, options: RewriteOptions): string {
   let next = scrubToken(text, token);
   if (!next) return next;
 
+  const absolute = `${(options.appOrigin || '').replace(/\/+$/, '')}${prefix}`;
   for (const from of originVariants(portalOrigin)) {
-    next = next.replaceAll(from, prefix);
+    next = next.replaceAll(from, absolute);
     next = next.replaceAll(
       encodeURIComponent(from),
-      encodeURIComponent(prefix),
+      encodeURIComponent(absolute),
     );
-    next = next.replaceAll(escapeSlashes(from), escapeSlashes(prefix));
+    next = next.replaceAll(escapeSlashes(from), escapeSlashes(absolute));
   }
 
   const isJs = /javascript|ecmascript|application\/json/i.test(contentType);

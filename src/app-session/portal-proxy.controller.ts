@@ -117,7 +117,7 @@ export class PortalProxyController {
     // upstream call. The session above has been checked all the same.
     const assetKey =
       req.method === 'GET'
-        ? ProxyAssetCache.key(appKey, hostKey, restPath, search)
+        ? ProxyAssetCache.key(appKey, hostKey, restPath, search, session.origin)
         : null;
     const cached = assetKey ? this.assets.get(assetKey) : null;
     if (assetKey && cached) {
@@ -199,6 +199,7 @@ export class PortalProxyController {
             contentType: type,
             restPath,
             token: issued.token,
+            appOrigin: session.origin,
           })
         : Buffer.from(await upstream.arrayBuffer());
     } catch {

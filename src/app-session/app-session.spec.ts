@@ -322,9 +322,51 @@ describe('app session + portal proxy (HTTP)', () => {
 
     expect(res.text).not.toContain(SERVICE_TOKEN);
     expect(res.text).toContain(`"${PREFIX}/portal/apps/dashboards/x.js"`);
-    expect(res.text).toContain(`${PREFIX}/server/rest`);
+    expect(res.text).toContain(`>${ORIGIN}${PREFIX}/server/rest `);
     expect(res.headers['cache-control']).toBe('private, no-store');
     expect(res.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('proxy keeps a federated server owningSystemUrl absolute on the app origin', async () => {
+    // A portal on another host (City of Kigali) framed from the GeoHub origin.
+    // An origin-less owningSystemUrl never matches the portal IdentityManager
+    // knows, and it loops on sign-in until the page freezes.
+    const COK = 'https://inspection.kigalicity.gov.rw';
+    const cokPrefix = `/api/v1/portal-proxy/${APP}/cok`;
+    issueToken.mockResolvedValue({
+      token: SERVICE_TOKEN,
+      expiresAt: Date.now() + 600_000,
+      referer: ORIGIN,
+      portalUrl: `${COK}/portal`,
+      portalHostKey: 'cok',
+    });
+    const cookie = await signIn();
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          currentVersion: 11.3,
+          owningSystemUrl: `${COK}/portal`,
+          authInfo: {
+            isTokenBasedSecurity: true,
+            tokenServicesUrl: `${COK}/portal/sharing/rest/generateToken`,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const res = await request(app.getHttpServer())
+      .get(`${cokPrefix}/server/rest/info?f=json`)
+      .set('Cookie', cookie)
+      .set('Accept-Encoding', 'identity')
+      .expect(200);
+    const info = JSON.parse(res.text) as {
+      owningSystemUrl: string;
+      authInfo: { tokenServicesUrl: string };
+    };
+    expect(info.owningSystemUrl).toBe(`${ORIGIN}${cokPrefix}/portal`);
+    expect(info.authInfo.tokenServicesUrl).toBe(
+      `${ORIGIN}${cokPrefix}/portal/sharing/rest/generateToken`,
+    );
   });
 
   it('proxy forwards POST bodies and rewrites redirects without the token', async () => {
@@ -435,7 +477,7 @@ describe('app session + portal proxy (HTTP)', () => {
     expect(first.headers.vary).toContain('Accept-Encoding');
     expect(first.headers.etag).not.toBe('"upstream"');
     const text = brotliDecompressSync(first.body).toString();
-    expect(text).toContain(`var portal="${PREFIX}/portal"`);
+    expect(text).toContain(`var portal="${ORIGIN}${PREFIX}/portal"`);
     expect(text).not.toContain(SERVICE_TOKEN);
     expect(first.body.length).toBeLessThan(text.length / 4);
 
@@ -476,7 +518,7 @@ describe('app session + portal proxy (HTTP)', () => {
     expect(res.headers['cache-control']).toBe('private, no-store');
     expect(res.headers['content-encoding']).toBe('gzip');
     expect(gunzipSync(res.body).toString()).toContain(
-      `"url":"${PREFIX}/portal"`,
+      `"url":"${ORIGIN}${PREFIX}/portal"`,
     );
 
     await request(app.getHttpServer())
@@ -500,7 +542,7 @@ describe('app session + portal proxy (HTTP)', () => {
       .set('Accept-Encoding', 'identity')
       .expect(200);
     expect(res.headers['content-encoding']).toBeUndefined();
-    expect(res.text).toContain(`var portal="${PREFIX}/portal"`);
+    expect(res.text).toContain(`var portal="${ORIGIN}${PREFIX}/portal"`);
   });
 });
 
@@ -550,6 +592,37 @@ describe('portal proxy rewrite helpers', () => {
     expect(out).toContain(`"e":"${prefix.replaceAll('/', '\\/')}\\/server"`);
     expect(out).toContain(`"p":"${prefix}/portal/x"`);
     expect(out).not.toContain(prefix + prefix);
+  });
+
+  it('makes absolute portal URLs absolute on the app origin, root-relative ones stay relative', () => {
+    const app = 'https://app.example';
+    const portal = 'https://other-portal.example';
+    const absolute = `${app}${PREFIX}`;
+    const out = rewritePayload(
+      [
+        `{"owningSystemUrl":"${portal}/portal"`,
+        `"esc":"https:\\/\\/other-portal.example\\/server"`,
+        `"enc":"${encodeURIComponent(`${portal}/portal/home`)}"`,
+        `"plain":"http://other-portal.example/arcgis"`,
+        `"root":"/portal/sharing"`,
+        `"done":"${portal}${PREFIX}/portal"}`,
+      ].join(','),
+      {
+        portalOrigin: portal,
+        prefix: PREFIX,
+        contentType: 'application/json',
+        restPath: 'server/rest/info',
+        token: null,
+        appOrigin: `${app}/`,
+      },
+    );
+    const json = JSON.parse(out) as Record<string, string>;
+    expect(json.owningSystemUrl).toBe(`${absolute}/portal`);
+    expect(json.esc).toBe(`${absolute}/server`);
+    expect(json.enc).toBe(encodeURIComponent(`${absolute}/portal/home`));
+    expect(json.plain).toBe(`${absolute}/arcgis`);
+    expect(json.root).toBe(`${PREFIX}/portal/sharing`);
+    expect(json.done).toBe(`${absolute}/portal`);
   });
 
   it('leaves StoryMap links on their portal, since a story cannot run under the proxy', () => {
