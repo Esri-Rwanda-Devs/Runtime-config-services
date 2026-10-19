@@ -29,6 +29,8 @@ import {
   rewritePayload,
   shouldRewriteBody,
   softenPermissionRefusal,
+  SURVEY123_HOST_KEY,
+  SURVEY123_ORIGIN,
 } from './portal-proxy.rewrite';
 
 const PROXY_TIMEOUT_MS = 120_000;
@@ -109,7 +111,7 @@ export class PortalProxyController {
     }
     const restPath = pathPart.slice(prefix.length + 1);
 
-    if (!isProxyRequestAllowed(req.method, restPath)) {
+    if (!isProxyRequestAllowed(req.method, restPath, hostKey)) {
       throw new ForbiddenException('This portal operation is not available');
     }
 
@@ -125,17 +127,25 @@ export class PortalProxyController {
       return;
     }
 
-    const issued = await this.tokens.issueToken({
-      appKey,
-      portalHostKey: hostKey,
-      origin: session.origin,
-    });
-    const portalOrigin = new URL(issued.portalUrl).origin;
+    // Survey123's own site is public and gets no token; every other host key
+    // names a portal credential and goes through the broker.
+    const survey123 = hostKey === SURVEY123_HOST_KEY;
+    let portalOrigin = SURVEY123_ORIGIN;
+    let token: string | null = null;
+    if (!survey123) {
+      const issued = await this.tokens.issueToken({
+        appKey,
+        portalHostKey: hostKey,
+        origin: session.origin,
+      });
+      portalOrigin = new URL(issued.portalUrl).origin;
+      token = issued.token;
+    }
     const target = resolveUpstreamUrl(portalOrigin, restPath, search);
     if (!target) {
       throw new BadRequestException('Invalid proxy path');
     }
-    target.searchParams.set('token', issued.token);
+    if (token) target.searchParams.set('token', token);
 
     const headers: Record<string, string> = {
       accept: req.headers.accept || '*/*',
@@ -182,7 +192,7 @@ export class PortalProxyController {
     if (REDIRECTS.has(upstream.status) && location) {
       res.redirect(
         upstream.status,
-        rewriteLocation(location, portalOrigin, prefix, issued.token),
+        rewriteLocation(location, portalOrigin, prefix, token),
       );
       return;
     }
@@ -192,16 +202,19 @@ export class PortalProxyController {
     const type = upstream.headers.get('content-type') || '';
     let body: string | Buffer;
     try {
-      body = shouldRewriteBody(type)
-        ? rewritePayload(softenPermissionRefusal(await upstream.text()), {
-            portalOrigin,
-            prefix,
-            contentType: type,
-            restPath,
-            token: issued.token,
-            appOrigin: session.origin,
-          })
-        : Buffer.from(await upstream.arrayBuffer());
+      // Survey123 bodies pass through: its assets are relative and it takes
+      // its portal from ?portalUrl=, so portal rewrites would only corrupt it.
+      body =
+        !survey123 && shouldRewriteBody(type)
+          ? rewritePayload(softenPermissionRefusal(await upstream.text()), {
+              portalOrigin,
+              prefix,
+              contentType: type,
+              restPath,
+              token,
+              appOrigin: session.origin,
+            })
+          : Buffer.from(await upstream.arrayBuffer());
     } catch {
       res
         .status(502)

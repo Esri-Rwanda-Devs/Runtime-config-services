@@ -422,6 +422,51 @@ describe('app session + portal proxy (HTTP)', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  const S123 = `/api/v1/portal-proxy/${APP}/s123`;
+
+  it('proxy serves Survey123 from survey123.arcgis.com without a token or rewrites', async () => {
+    const cookie = await signIn();
+    // The form reads its portal through the proxy; that URL must come back as is.
+    const page = `<script src="assets/js/router.js"></script>${ORIGIN}${PREFIX}/portal /portal/x`;
+    fetchMock.mockResolvedValueOnce(
+      new Response(page, {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      }),
+    );
+    const res = await request(app.getHttpServer())
+      .get(`${S123}/share/abc?portalUrl=x&token=client-supplied`)
+      .set('Cookie', cookie)
+      .set('Accept-Encoding', 'identity')
+      .expect(200);
+
+    expect(issueToken).not.toHaveBeenCalled();
+    const [target] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(target.origin).toBe('https://survey123.arcgis.com');
+    expect(target.pathname).toBe('/share/abc');
+    expect(target.searchParams.get('portalUrl')).toBe('x');
+    expect(target.searchParams.has('token')).toBe(false);
+    expect(res.text).toBe(page);
+    expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
+  });
+
+  it('proxy only reads from Survey123 and still needs the session and origin', async () => {
+    await request(app.getHttpServer()).get(`${S123}/share/abc`).expect(401);
+    const cookie = await signIn();
+    await request(app.getHttpServer())
+      .post(`${S123}/share/abc`)
+      .set('Cookie', cookie)
+      .set('Origin', ORIGIN)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get(`${S123}/share/abc`)
+      .set('Cookie', cookie)
+      .set('Origin', 'https://evil.example')
+      .expect(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(issueToken).not.toHaveBeenCalled();
+  });
+
   /** GET with the raw bytes as sent (superagent would decompress them). */
   async function rawGet(
     path: string,
@@ -574,6 +619,34 @@ describe('portal proxy rewrite helpers', () => {
     expect(
       isProxyRequestAllowed('POST', 'server/rest/services/A/MapServer/0/query'),
     ).toBe(true);
+  });
+
+  it('lets through only the read-only oauth2 validateAppAccess check', () => {
+    const check = 'portal/sharing/rest/oauth2/validateAppAccess';
+    expect(isProxyRequestAllowed('GET', check)).toBe(true);
+    expect(isProxyRequestAllowed('POST', check)).toBe(false);
+    expect(
+      isProxyRequestAllowed('GET', 'portal/sharing/rest/oauth2/token'),
+    ).toBe(false);
+    expect(
+      isProxyRequestAllowed(
+        'GET',
+        'portal/portaladmin/../sharing/rest/oauth2/validateAppAccess',
+      ),
+    ).toBe(false);
+    expect(isProxyRequestAllowed('GET', `${check}/../../generateToken`)).toBe(
+      false,
+    );
+    expect(
+      isProxyRequestAllowed('GET', 'portal/sharing/rest/generateToken'),
+    ).toBe(false);
+  });
+
+  it('allows only GET and HEAD on Survey123', () => {
+    expect(isProxyRequestAllowed('GET', 'share/abc', 's123')).toBe(true);
+    expect(isProxyRequestAllowed('HEAD', 'share/abc', 's123')).toBe(true);
+    expect(isProxyRequestAllowed('POST', 'share/abc', 's123')).toBe(false);
+    expect(isProxyRequestAllowed('OPTIONS', 'share/abc', 's123')).toBe(false);
   });
 
   it('rewrites absolute and escaped portal URLs and does not double-prefix', () => {

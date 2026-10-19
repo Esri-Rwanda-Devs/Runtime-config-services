@@ -23,21 +23,50 @@ const ROOT_PATHS = ['/portal/', '/server/', '/arcgis/'];
 const BLOCKED_PATH =
   /(?:^|\/)(?:generateToken|oauth2|portaladmin|admin|tokens|signout|signin)(?:\/|$)|\/sharing\/rest\/.*\/(?:delete\w*|update\w*|add\w*|remove\w*|share|unshare|reassign|move\w*|protect|unprotect|createService|createGroup|join|leave|invite\w*|publish|export)(?:\/|$)|\/(?:applyEdits|addFeatures|updateFeatures|deleteFeatures|calculate|truncate|append)(?:\/|$)/i;
 
+/**
+ * The one oauth2 call let through: it only reports whether the token's user
+ * may use an app ({ valid }) and issues nothing. Survey123 refuses to open a
+ * form without it.
+ */
+const ALLOWED_OAUTH_PATH =
+  /^(?:\/[\w-]+)*\/sharing\/rest\/oauth2\/validateAppAccess$/i;
+
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'OPTIONS']);
+
+/**
+ * Reserved host key for the Survey123 web app, which runs on
+ * survey123.arcgis.com rather than on a portal. Served same-origin, a form
+ * reads its portal (?portalUrl=) through this proxy like a dashboard does,
+ * so viewing it needs no second sign-in. It never gets a token and only
+ * reads: submitting still hits BLOCKED_PATH on the portal side.
+ */
+export const SURVEY123_HOST_KEY = 's123';
+export const SURVEY123_ORIGIN = 'https://survey123.arcgis.com';
+const SURVEY123_METHODS = new Set(['GET', 'HEAD']);
 
 export function proxyPrefix(appKey: string, hostKey: string): string {
   return `${PORTAL_PROXY_ROUTE}/${appKey}/${hostKey}`;
 }
 
-export function isProxyRequestAllowed(method: string, path: string): boolean {
-  if (!ALLOWED_METHODS.has(method.toUpperCase())) return false;
+export function isProxyRequestAllowed(
+  method: string,
+  path: string,
+  hostKey?: string,
+): boolean {
+  const methods =
+    hostKey === SURVEY123_HOST_KEY ? SURVEY123_METHODS : ALLOWED_METHODS;
+  if (!methods.has(method.toUpperCase())) return false;
   let decoded: string;
   try {
     decoded = decodeURIComponent(path);
   } catch {
     return false;
   }
-  return !BLOCKED_PATH.test(`/${decoded.replace(/^\/+/, '')}`);
+  const normalized = `/${decoded.replace(/^\/+/, '')}`;
+  if (method.toUpperCase() === 'GET' && ALLOWED_OAUTH_PATH.test(normalized)) {
+    return true;
+  }
+  return !BLOCKED_PATH.test(normalized);
 }
 
 /**

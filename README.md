@@ -416,6 +416,16 @@ operations (`BLOCKED_PATH` in `portal-proxy.rewrite.ts`). Static portal files
 are cached, with browser cache headers, brotli/gzip compression and an
 in-memory LRU. StoryMap links are left unproxied.
 
+Survey123 forms use the reserved host key `s123`, which serves
+`survey123.arcgis.com` through the proxy without a token, without rewriting and
+for GET/HEAD only. The app frames
+`.../portal-proxy/<appKey>/s123/share/<itemId>?portalUrl=<app origin>/api/v1/portal-proxy/<appKey>/<hostKey>/portal`,
+so the form reads its portal through the proxy with that host's service
+account and needs no second sign-in. The forms are view-only: submissions hit
+`BLOCKED_PATH`. The one `oauth2` call let through is GET
+`sharing/rest/oauth2/validateAppAccess`, which only reports whether the user may
+use an app; Survey123 will not open a form without it.
+
 
 ### Shared typography
 
