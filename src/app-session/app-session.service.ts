@@ -1,6 +1,7 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -13,6 +14,7 @@ import {
   PortalNetworkError,
 } from '../portal/arcgis-portal.client';
 import { PortalCredentialCryptoService } from '../portal/portal-credential-crypto.service';
+import { findStandaloneApp } from './standalone-apps';
 
 export const APP_SESSION_COOKIE = 'rc_app_session';
 /**
@@ -57,6 +59,8 @@ export type UserPortalToken = {
  */
 @Injectable()
 export class AppSessionService {
+  private readonly logger = new Logger(AppSessionService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly portalClient: ArcgisPortalClient,
@@ -124,6 +128,12 @@ export class AppSessionService {
       }
       throw new UnauthorizedException('Invalid username or password');
     }
+    // Never logs the token or the user; enough to tell why an app got none.
+    this.logger.log(
+      keepToken
+        ? `Sign-in to ${input.appKey}: user portal token kept, portal expiry ${describeExpiry(issued.expiresAt)}`
+        : `Sign-in to ${input.appKey}: no user portal token kept (config links no standalone app)`,
+    );
 
     const session: AppSession = {
       appKey: input.appKey,
@@ -158,7 +168,11 @@ export class AppSessionService {
 
   /** Decrypts the session's portal token; null when absent, broken or expired. */
   userPortalToken(session: AppSession): UserPortalToken | null {
-    if (!session.portalToken) return null;
+    const none = (reason: string) => {
+      this.logger.warn(`No user portal token for ${session.appKey}: ${reason}`);
+      return null;
+    };
+    if (!session.portalToken) return none('session carries none');
     try {
       const value = JSON.parse(this.crypto.decrypt(session.portalToken)) as {
         t?: unknown;
@@ -168,10 +182,12 @@ export class AppSessionService {
       if (
         typeof value.t !== 'string' ||
         typeof value.e !== 'number' ||
-        typeof value.p !== 'string' ||
-        value.e <= Date.now()
+        typeof value.p !== 'string'
       ) {
-        return null;
+        return none('malformed');
+      }
+      if (value.e <= Date.now()) {
+        return none(`expired, expiry ${describeExpiry(value.e)}`);
       }
       return {
         token: value.t,
@@ -179,8 +195,10 @@ export class AppSessionService {
         portalUrl: value.p,
         username: session.username,
       };
-    } catch {
-      return null;
+    } catch (error) {
+      return none(
+        `cannot be read (${error instanceof Error ? error.message : 'unknown error'})`,
+      );
     }
   }
 
@@ -275,10 +293,34 @@ export class AppSessionService {
   }
 }
 
-/** True when the app's config frames /api/v1/app-launch/<appKey>/... anywhere. */
+/** "<raw> (in 1020 min)" / "(5 min ago)": shows a seconds-for-ms mix-up too. */
+function describeExpiry(expiresAt: number): string {
+  const minutes = Math.round((expiresAt - Date.now()) / 60_000);
+  return `${expiresAt} (${minutes >= 0 ? `in ${minutes} min` : `${-minutes} min ago`})`;
+}
+
+const APP_LAUNCH_LINK = /\/api\/v1\/app-launch\/([a-z0-9-]+)\/([a-z0-9-]+)/g;
+
+/**
+ * True when a string anywhere in the app's config links to
+ * /api/v1/app-launch/<appKey>/<app> for a known standalone app.
+ */
 export function linksStandaloneApps(config: unknown, appKey: string): boolean {
-  if (config === null || config === undefined) return false;
-  return JSON.stringify(config).includes(`/api/v1/app-launch/${appKey}/`);
+  if (typeof config === 'string') {
+    for (const match of config.matchAll(APP_LAUNCH_LINK)) {
+      if (match[1] === appKey && findStandaloneApp(match[2])) return true;
+    }
+    return false;
+  }
+  if (Array.isArray(config)) {
+    return config.some((value) => linksStandaloneApps(value, appKey));
+  }
+  if (config !== null && typeof config === 'object') {
+    return Object.values(config).some((value) =>
+      linksStandaloneApps(value, appKey),
+    );
+  }
+  return false;
 }
 
 function cookieNames(header: string | undefined): string[] {

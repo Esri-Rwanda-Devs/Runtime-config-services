@@ -20,7 +20,7 @@ import { PortalAuthTokenService } from '../portal/portal-auth-token.service';
 import { PortalCredentialCryptoService } from '../portal/portal-credential-crypto.service';
 import { AppLaunchController } from './app-launch.controller';
 import { AppSessionController } from './app-session.controller';
-import { AppSessionService } from './app-session.service';
+import { AppSessionService, linksStandaloneApps } from './app-session.service';
 import { PortalProxyController } from './portal-proxy.controller';
 import {
   isActiveUserContent,
@@ -1004,5 +1004,45 @@ describe('portal proxy rewrite helpers', () => {
     expect(rewriteLocation('/portal/home/', ORIGIN, PREFIX, null)).toBe(
       `${PREFIX}/portal/home/`,
     );
+  });
+});
+
+describe('linksStandaloneApps', () => {
+  it('finds a launch link for this app to a known standalone app', () => {
+    const config = {
+      modules: [
+        {
+          apps: [
+            {
+              localShellPath: `${ORIGIN}/api/v1/app-launch/${APP}/water-quality`,
+            },
+          ],
+        },
+      ],
+    };
+    expect(linksStandaloneApps(config, APP)).toBe(true);
+    expect(
+      linksStandaloneApps(
+        { path: `/api/v1/app-launch/${APP}/school-demand` },
+        APP,
+      ),
+    ).toBe(true);
+  });
+
+  it('ignores other apps, unknown standalone apps and configs without links', () => {
+    expect(
+      linksStandaloneApps(
+        { path: '/api/v1/app-launch/other-app/water-quality' },
+        APP,
+      ),
+    ).toBe(false);
+    expect(
+      linksStandaloneApps(
+        { path: `/api/v1/app-launch/${APP}/crop-health` },
+        APP,
+      ),
+    ).toBe(false);
+    expect(linksStandaloneApps({ modules: [] }, APP)).toBe(false);
+    expect(linksStandaloneApps(null, APP)).toBe(false);
   });
 });
