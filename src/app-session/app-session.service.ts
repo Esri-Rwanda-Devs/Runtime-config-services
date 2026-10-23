@@ -46,7 +46,10 @@ export type AppSession = {
 /** The signed-in user's own portal token, for standalone apps on the origin. */
 export type UserPortalToken = {
   token: string;
+  /** When this server stops handing it out, on its own clock. */
   expiresAt: number;
+  /** The expiry to give the app, on the portal's clock. */
+  portalExpiresAt: number;
   portalUrl: string;
   username: string;
 };
@@ -128,25 +131,36 @@ export class AppSessionService {
       }
       throw new UnauthorizedException('Invalid username or password');
     }
+    const now = Date.now();
+    const sessionEnd = now + minutes * 60_000;
+    const portalExpiry = issued.expiresAt || sessionEnd;
+    const deadline = tokenDeadline(portalExpiry, now, sessionEnd);
     // Never logs the token or the user; enough to tell why an app got none.
     this.logger.log(
       keepToken
-        ? `Sign-in to ${input.appKey}: user portal token kept, portal expiry ${describeExpiry(issued.expiresAt)}`
+        ? `Sign-in to ${input.appKey}: user portal token kept, portal expiry ${describeExpiry(portalExpiry)}`
         : `Sign-in to ${input.appKey}: no user portal token kept (config links no standalone app)`,
     );
+    if (keepToken && deadline !== portalExpiry) {
+      this.logger.warn(
+        `Portal expiry ${describeExpiry(portalExpiry)} does not fit a ${minutes} min token: this server's clock and the portal's disagree; the token is kept until the session ends`,
+      );
+    }
 
     const session: AppSession = {
       appKey: input.appKey,
       username: input.username,
       origin: input.origin,
-      expiresAt: Date.now() + minutes * 60_000,
+      expiresAt: sessionEnd,
       ...(keepToken
         ? {
             portalToken: this.crypto.encrypt(
               JSON.stringify({
                 t: issued.token,
-                // The portal may cap the lifetime below the session's.
-                e: issued.expiresAt || Date.now() + minutes * 60_000,
+                // When to stop handing it out, on this server's clock.
+                e: deadline,
+                // The portal's own expiry, passed on to the app as is.
+                x: portalExpiry,
                 p: credential.portalUrl,
               }),
             ),
@@ -177,6 +191,7 @@ export class AppSessionService {
       const value = JSON.parse(this.crypto.decrypt(session.portalToken)) as {
         t?: unknown;
         e?: unknown;
+        x?: unknown;
         p?: unknown;
       };
       if (
@@ -189,9 +204,17 @@ export class AppSessionService {
       if (value.e <= Date.now()) {
         return none(`expired, expiry ${describeExpiry(value.e)}`);
       }
+      const expiresAt = Math.min(value.e, session.expiresAt);
       return {
         token: value.t,
-        expiresAt: Math.min(value.e, session.expiresAt),
+        expiresAt,
+        // Clocks agree (or an older cookie): this server's view is the
+        // portal's. Otherwise only the portal's own value means anything to
+        // the app.
+        portalExpiresAt:
+          typeof value.x === 'number' && value.x !== value.e
+            ? value.x
+            : expiresAt,
         portalUrl: value.p,
         username: session.username,
       };
@@ -297,6 +320,27 @@ export class AppSessionService {
 function describeExpiry(expiresAt: number): string {
   const minutes = Math.round((expiresAt - Date.now()) / 60_000);
   return `${expiresAt} (${minutes >= 0 ? `in ${minutes} min` : `${-minutes} min ago`})`;
+}
+
+/** Portals may round a token's lifetime up a little. */
+const PORTAL_EXPIRY_TOLERANCE_MS = 5 * 60_000;
+
+/**
+ * When to stop handing out the user's token, on this server's clock. The
+ * portal's expiry is on the portal's clock: it is used (it may be capped below
+ * the session) only when it falls between now and the session's end. A portal
+ * never issues a token that has already expired, so anything else means the
+ * two clocks disagree, and the session's end is used instead.
+ */
+export function tokenDeadline(
+  portalExpiry: number,
+  now: number,
+  sessionEnd: number,
+): number {
+  return portalExpiry > now &&
+    portalExpiry <= sessionEnd + PORTAL_EXPIRY_TOLERANCE_MS
+    ? portalExpiry
+    : sessionEnd;
 }
 
 const APP_LAUNCH_LINK = /\/api\/v1\/app-launch\/([a-z0-9-]+)\/([a-z0-9-]+)/g;

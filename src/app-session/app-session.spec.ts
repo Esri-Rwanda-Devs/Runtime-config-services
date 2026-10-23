@@ -20,7 +20,11 @@ import { PortalAuthTokenService } from '../portal/portal-auth-token.service';
 import { PortalCredentialCryptoService } from '../portal/portal-credential-crypto.service';
 import { AppLaunchController } from './app-launch.controller';
 import { AppSessionController } from './app-session.controller';
-import { AppSessionService, linksStandaloneApps } from './app-session.service';
+import {
+  AppSessionService,
+  linksStandaloneApps,
+  tokenDeadline,
+} from './app-session.service';
 import { PortalProxyController } from './portal-proxy.controller';
 import {
   isActiveUserContent,
@@ -374,16 +378,49 @@ describe('app session + portal proxy (HTTP)', () => {
       .expect(401);
 
     // The portal capped the token below the session and it has run out.
+    const signedInAt = Date.now();
     generateToken.mockResolvedValueOnce({
       token: 'user-token',
-      expiresAt: Date.now() - 1,
+      expiresAt: signedInAt + 60_000,
     });
-    const stale = await signIn();
+    const capped = await signIn();
     await post()
       .set('Origin', ORIGIN)
-      .set('Cookie', stale)
+      .set('Cookie', capped)
       .send({ appKey: APP })
-      .expect(401);
+      .expect(200);
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(signedInAt + 120_000);
+    try {
+      await post()
+        .set('Origin', ORIGIN)
+        .set('Cookie', capped)
+        .send({ appKey: APP })
+        .expect(401);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("portal-token still works when this server's clock is hours off the portal's", async () => {
+    // As seen on gh.space.gov.rw: the server runs ~9 h fast, so an 8 h token
+    // from the portal looks expired an hour before it was issued.
+    const portalExpiry = Date.now() - 57 * 60_000;
+    generateToken.mockResolvedValueOnce({
+      token: 'user-token',
+      expiresAt: portalExpiry,
+    });
+    const cookie = await signIn();
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/app-auth/portal-token')
+      .set('X-Requested-With', 'fetch')
+      .set('Origin', ORIGIN)
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(200);
+    const body = res.body as { token: string; expires: number };
+    expect(body.token).toBe('user-token');
+    // The app gets the portal's own expiry, which matches its clock.
+    expect(body.expires).toBe(portalExpiry);
   });
 
   it('portal-token asks sessions from before tokens were kept to sign in again', async () => {
@@ -1044,5 +1081,26 @@ describe('linksStandaloneApps', () => {
     ).toBe(false);
     expect(linksStandaloneApps({ modules: [] }, APP)).toBe(false);
     expect(linksStandaloneApps(null, APP)).toBe(false);
+  });
+});
+
+describe('tokenDeadline', () => {
+  const now = 1_000_000_000_000;
+  const sessionEnd = now + 480 * 60_000;
+
+  it('uses the portal expiry when it fits the session, capped or not', () => {
+    expect(tokenDeadline(now + 60 * 60_000, now, sessionEnd)).toBe(
+      now + 60 * 60_000,
+    );
+    expect(tokenDeadline(sessionEnd + 60_000, now, sessionEnd)).toBe(
+      sessionEnd + 60_000,
+    );
+  });
+
+  it('falls back to the session end when the clocks disagree', () => {
+    expect(tokenDeadline(now - 57 * 60_000, now, sessionEnd)).toBe(sessionEnd);
+    expect(tokenDeadline(now + 17 * 3_600_000, now, sessionEnd)).toBe(
+      sessionEnd,
+    );
   });
 });

@@ -138,7 +138,7 @@ export class AppSessionController {
     }
     return {
       token: issued.token,
-      expires: issued.expiresAt,
+      expires: issued.portalExpiresAt,
       userId: issued.username,
       server: issued.portalUrl,
       ssl: issued.portalUrl.startsWith('https:'),
