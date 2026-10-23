@@ -73,6 +73,7 @@ export function launchPage(
     handoff: target.handoff,
     tokenEndpoint:
       target.handoff === 'token-endpoint' ? target.tokenEndpoint : null,
+    storageKey: target.handoff === 'session-storage' ? target.storageKey : null,
   }).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html lang="en">
@@ -156,7 +157,55 @@ const LAUNCH_SCRIPT = `
     }).then(done, done);
   }
 
-  var open = cfg.handoff === 'arcgis' ? frameApp : openWithEndpoint;
+  function readStored() {
+    try { return JSON.parse(window.sessionStorage.getItem(cfg.storageKey) || 'null'); } catch (e) { return null; }
+  }
+
+  // The app's own profile lookup (sharing/rest/community/self), so its header
+  // shows the same name as after its own sign-in. Falls back to the username.
+  function lookupUser(credential) {
+    var fallback = { username: credential.userId, fullName: credential.userId, email: '' };
+    var url;
+    try { url = new URL(credential.server.replace(/\\/+$/, '') + '/sharing/rest/community/self'); } catch (e) { return Promise.resolve(fallback); }
+    if (url.origin !== origin) return Promise.resolve(fallback);
+    return fetch(url.href, {
+      method: 'POST',
+      credentials: 'omit',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'f=json&token=' + encodeURIComponent(credential.token)
+    }).then(function (res) { return res.json(); }).then(function (self) {
+      var username = (self && self.username) || credential.userId;
+      return { username: username, fullName: (self && self.fullName) || username, email: (self && self.email) || '' };
+    }, function () { return fallback; });
+  }
+
+  // Writes the session the app's OAuth callback would have written: no refresh
+  // token, valid until the portal token expires.
+  function openWithSession(credential) {
+    var done = function () { window.location.replace(new URL(cfg.path, origin).href); };
+    var expires = credential && Number(credential.expires);
+    if (!credential || !credential.token || !(expires > Date.now())) return done();
+    var stored = readStored();
+    // Keep the app's own sign-in for this user: it can refresh, ours cannot.
+    if (stored && stored.token && Date.now() < stored.expiresAt &&
+        stored.user && stored.user.username === credential.userId) return done();
+    lookupUser(credential).then(function (user) {
+      try {
+        window.sessionStorage.setItem(cfg.storageKey, JSON.stringify({
+          token: credential.token,
+          tokenExpiresAt: expires,
+          refreshToken: null,
+          expiresAt: expires,
+          user: user
+        }));
+      } catch (e) {}
+      done();
+    });
+  }
+
+  var open = cfg.handoff === 'arcgis' ? frameApp
+    : cfg.handoff === 'token-endpoint' ? openWithEndpoint
+    : openWithSession;
   fetchToken().then(open, function () { open(null); });
 })();
 `;

@@ -19,7 +19,11 @@ type Frame = {
 };
 
 /** Runs the launch page's script against a minimal browser stand-in. */
-function runLaunchPage(appId: string, fetchImpl: jest.Mock) {
+function runLaunchPage(
+  appId: string,
+  fetchImpl: jest.Mock,
+  stored: Record<string, string> = {},
+) {
   const html = launchPage('water-resources', STANDALONE_APPS[appId], 'n0nce');
   const config = /id="launch-config">([^<]*)<\/script>/.exec(html)![1];
   const script = /<script nonce="n0nce">([\s\S]*?)<\/script>/.exec(html)![1];
@@ -27,6 +31,12 @@ function runLaunchPage(appId: string, fetchImpl: jest.Mock) {
   const frames: Frame[] = [];
   const listeners: Array<(event: unknown) => void> = [];
   const replace = jest.fn();
+  const sessionStorage = {
+    getItem: (key: string) => stored[key] ?? null,
+    setItem: jest.fn((key: string, value: string) => {
+      stored[key] = value;
+    }),
+  };
   const context = {
     URL,
     JSON,
@@ -43,13 +53,14 @@ function runLaunchPage(appId: string, fetchImpl: jest.Mock) {
     },
     window: {
       location: { origin: ORIGIN, replace },
+      sessionStorage,
       addEventListener: (type: string, fn: (event: unknown) => void) => {
         if (type === 'message') listeners.push(fn);
       },
     },
   };
   runInNewContext(script, context);
-  return { frames, listeners, replace };
+  return { frames, listeners, replace, stored, sessionStorage };
 }
 
 const json = (status: number, body: unknown) =>
@@ -185,5 +196,124 @@ describe('app launch page script', () => {
     );
     await settle();
     expect(rejected.replace).toHaveBeenCalledWith(`${ORIGIN}/school/dashboard`);
+  });
+
+  describe('Crop Health session hand-off', () => {
+    const KEY = 'crop-health:session';
+    const PROFILE = { username: 'alice', fullName: 'Alice A', email: 'a@x.rw' };
+    const session = (raw: string) =>
+      JSON.parse(raw) as { token: string; user: { username: string } };
+
+    it("writes the session the app's OAuth callback would, then opens it", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockImplementationOnce(() => json(200, CREDENTIAL))
+        .mockImplementationOnce(() => json(200, PROFILE));
+      const { frames, replace, stored } = runLaunchPage(
+        'crop-health',
+        fetchMock,
+      );
+      await settle();
+
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        `${ORIGIN}/portal/sharing/rest/community/self`,
+        expect.objectContaining({
+          method: 'POST',
+          credentials: 'omit',
+          body: 'f=json&token=user-token',
+        }),
+      );
+      expect(JSON.parse(stored[KEY])).toEqual({
+        token: 'user-token',
+        tokenExpiresAt: CREDENTIAL.expires,
+        refreshToken: null,
+        expiresAt: CREDENTIAL.expires,
+        user: PROFILE,
+      });
+      expect(replace).toHaveBeenCalledWith(`${ORIGIN}/crop-health/`);
+      expect(frames).toHaveLength(0);
+    });
+
+    it('falls back to the username when the profile lookup fails', async () => {
+      const fetchMock = jest
+        .fn()
+        .mockImplementationOnce(() => json(200, CREDENTIAL))
+        .mockImplementationOnce(() => Promise.reject(new Error('offline')));
+      const { replace, stored } = runLaunchPage('crop-health', fetchMock);
+      await settle();
+      expect(session(stored[KEY]).user).toEqual({
+        username: 'alice',
+        fullName: 'alice',
+        email: '',
+      });
+      expect(replace).toHaveBeenCalledWith(`${ORIGIN}/crop-health/`);
+    });
+
+    it('never sends the token to a portal on another origin', async () => {
+      const fetchMock = jest.fn(() =>
+        json(200, { ...CREDENTIAL, server: 'https://evil.example/portal' }),
+      );
+      const { replace, stored } = runLaunchPage('crop-health', fetchMock);
+      await settle();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(session(stored[KEY]).user.username).toBe('alice');
+      expect(replace).toHaveBeenCalledWith(`${ORIGIN}/crop-health/`);
+    });
+
+    it("keeps the app's own live sign-in for the same user", async () => {
+      const own = JSON.stringify({
+        token: 'own-token',
+        tokenExpiresAt: Date.now() + 60_000,
+        refreshToken: 'refresh',
+        expiresAt: Date.now() + 3_600_000,
+        user: PROFILE,
+      });
+      const fetchMock = jest.fn(() => json(200, CREDENTIAL));
+      const { replace, stored, sessionStorage } = runLaunchPage(
+        'crop-health',
+        fetchMock,
+        { [KEY]: own },
+      );
+      await settle();
+      expect(sessionStorage.setItem).not.toHaveBeenCalled();
+      expect(stored[KEY]).toBe(own);
+      expect(replace).toHaveBeenCalledWith(`${ORIGIN}/crop-health/`);
+    });
+
+    it("replaces another user's or an expired session", async () => {
+      for (const old of [
+        {
+          token: 't',
+          expiresAt: Date.now() + 3_600_000,
+          user: { username: 'bob' },
+        },
+        { token: 't', expiresAt: Date.now() - 1, user: { username: 'alice' } },
+      ]) {
+        const fetchMock = jest
+          .fn()
+          .mockImplementationOnce(() => json(200, CREDENTIAL))
+          .mockImplementationOnce(() => json(200, PROFILE));
+        const { stored } = runLaunchPage('crop-health', fetchMock, {
+          [KEY]: JSON.stringify(old),
+        });
+        await settle();
+        expect(session(stored[KEY]).token).toBe('user-token');
+      }
+    });
+
+    it('opens the app untouched without a usable token', async () => {
+      for (const response of [
+        json(401, {}),
+        json(200, { ...CREDENTIAL, expires: Date.now() - 1 }),
+      ]) {
+        const { replace, sessionStorage } = runLaunchPage(
+          'crop-health',
+          jest.fn(() => response),
+        );
+        await settle();
+        expect(sessionStorage.setItem).not.toHaveBeenCalled();
+        expect(replace).toHaveBeenCalledWith(`${ORIGIN}/crop-health/`);
+      }
+    });
   });
 });

@@ -432,7 +432,7 @@ use an app; Survey123 will not open a form without it.
 ### Standalone apps
 
 Some catalog apps on the app origin (Water Quality, Forest Health, Mining
-Inspection, Schools Demand) run their own portal OAuth and never use the
+Inspection, Schools Demand, Crop Health) run their own portal OAuth and never use the
 proxy, so framed directly they ask for a second sign-in. A shell frames
 `/api/v1/app-launch/<appKey>/<app>` instead (as the item's `localShellPath`
 or `externalUrl`). That page reads the user's own token from
@@ -442,11 +442,17 @@ or `externalUrl`). That page reads the user's own token from
 - ArcGIS Maps SDK apps are framed with `arcgis-auth-origin`/`arcgis-auth-portal`
   and get the token by the SDK's `arcgis:auth:requestCredential` message.
 - Schools Demand gets it posted to its own `/school/api/auth/portal-token`.
+- Crop Health (source not available) only reads the session its own OAuth
+  callback leaves in sessionStorage, so the launch page writes
+  `crop-health:session` in that shape and opens the app in the same tab. A live
+  session the app made itself for the same user is kept (it can refresh). The
+  written one has no refresh token: when the token expires the app asks for its
+  own sign-in. This copies the deployed bundle's internals; re-check it whenever
+  Crop Health is rebuilt.
 
 The apps run with the user's own portal permissions, never the service
 account's. Without a token (signed out, older session) the app opens as before
-and asks for its own sign-in. Crop Health is not covered: it only takes a token
-through its sessionStorage internals.
+and asks for its own sign-in.
 
 Any script on the origin can read a signed-in user's token, so the proxy serves
 uploaded item HTML, SVG and XML (`.../content/items/<id>/data|resources|info`) as

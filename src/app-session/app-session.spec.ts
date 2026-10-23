@@ -467,7 +467,7 @@ describe('app session + portal proxy (HTTP)', () => {
     expect(res.text).not.toContain('token":"');
 
     await request(app.getHttpServer())
-      .get('/api/v1/app-launch/water-resources/crop-health')
+      .get('/api/v1/app-launch/water-resources/field-survey')
       .expect(404);
     await request(app.getHttpServer())
       .get('/api/v1/app-launch/water-resources/constructor')
@@ -1064,6 +1064,12 @@ describe('linksStandaloneApps', () => {
         APP,
       ),
     ).toBe(true);
+    expect(
+      linksStandaloneApps(
+        { path: `/api/v1/app-launch/${APP}/crop-health` },
+        APP,
+      ),
+    ).toBe(true);
   });
 
   it('ignores other apps, unknown standalone apps and configs without links', () => {
@@ -1075,7 +1081,7 @@ describe('linksStandaloneApps', () => {
     ).toBe(false);
     expect(
       linksStandaloneApps(
-        { path: `/api/v1/app-launch/${APP}/crop-health` },
+        { path: `/api/v1/app-launch/${APP}/field-survey` },
         APP,
       ),
     ).toBe(false);

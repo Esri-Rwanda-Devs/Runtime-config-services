@@ -9,16 +9,21 @@
  *   `arcgis:auth:requestCredential` message.
  * - `token-endpoint`: apps with their own backend. The launch page posts
  *   `{ token }` to the endpoint the app's OAuth callback uses, then opens it.
- *
- * Crop Health is left out: it only takes a token through its sessionStorage
- * internals, and its source is not available to change.
+ * - `session-storage`: apps that only read a session their own OAuth callback
+ *   wrote to sessionStorage (Crop Health; its source is not available). The
+ *   launch page writes that session, in the shape the deployed bundle reads,
+ *   then opens the app in the same tab. It has no refresh token, so when the
+ *   token runs out the app drops the session and asks for its own sign-in.
+ *   This copies app internals: re-check the shape whenever the app is rebuilt.
  */
 export type StandaloneApp = {
   title: string;
   /** Path on the session origin. */
   path: string;
 } & (
-  { handoff: 'arcgis' } | { handoff: 'token-endpoint'; tokenEndpoint: string }
+  | { handoff: 'arcgis' }
+  | { handoff: 'token-endpoint'; tokenEndpoint: string }
+  | { handoff: 'session-storage'; storageKey: string }
 );
 
 export const STANDALONE_APPS: Readonly<Record<string, StandaloneApp>> = {
@@ -42,6 +47,12 @@ export const STANDALONE_APPS: Readonly<Record<string, StandaloneApp>> = {
     path: '/school/dashboard',
     handoff: 'token-endpoint',
     tokenEndpoint: '/school/api/auth/portal-token',
+  },
+  'crop-health': {
+    title: 'Crop Health Monitoring',
+    path: '/crop-health/',
+    handoff: 'session-storage',
+    storageKey: 'crop-health:session',
   },
 };
 
