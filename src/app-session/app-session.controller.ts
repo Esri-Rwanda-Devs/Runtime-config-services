@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Headers,
   HttpCode,
@@ -22,6 +23,7 @@ import {
   OptionalAppKeyQueryDto,
 } from './dto/app-login.dto';
 import { AppSessionService, appSessionCookieName } from './app-session.service';
+import { SessionThrottlerGuard } from './session-throttler.guard';
 
 export function parseAllowedOrigins(value: string | undefined): string[] {
   if (!value?.trim()) {
@@ -49,7 +51,7 @@ export class AppSessionController {
     summary:
       'Sign a user in to a static mapping app with their own portal account',
     description:
-      'Requires an allowed Origin. Sets an HttpOnly session cookie used by /api/v1/portal-proxy. No portal token is returned.',
+      "Requires an allowed Origin. Sets an HttpOnly session cookie used by /api/v1/portal-proxy. No portal token is returned; for apps whose config links to /api/v1/app-launch the cookie carries the user's own token, encrypted, for /api/v1/app-auth/portal-token.",
   })
   async login(
     @Body() body: AppLoginBodyDto,
@@ -96,6 +98,50 @@ export class AppSessionController {
       authenticated: true,
       user: { username: session.username },
       expiresAt: session.expiresAt,
+    };
+  }
+
+  @Post('portal-token')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(SessionThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @ApiOperation({
+    summary: "The signed-in user's own portal token, for same-origin apps",
+    description:
+      'For standalone apps that call the portal themselves (handed over by /api/v1/app-launch). Requires the session, the Origin it was signed in from, X-Requested-With: fetch and (when sent) Sec-Fetch-Site: same-origin. Never the service account.',
+  })
+  async portalToken(
+    @Body() body: AppKeyBodyDto,
+    @Headers('origin') origin: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-requested-with') requestedWith: string | undefined,
+    @Headers('sec-fetch-site') fetchSite: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.setHeader('Cache-Control', 'no-store');
+    // Script-only: forms, links and same-site pages cannot send these.
+    if (
+      requestedWith !== 'fetch' ||
+      (fetchSite !== undefined && fetchSite !== 'same-origin')
+    ) {
+      throw new ForbiddenException('Not available to this request');
+    }
+    const approved = this.requireAllowedOrigin(origin);
+    const session = await this.sessions.verify(cookie, body.appKey);
+    if (!session || session.origin !== approved) {
+      throw new UnauthorizedException('Application login required');
+    }
+    const issued = this.sessions.userPortalToken(session);
+    if (!issued) {
+      // Sessions from before tokens were kept, or the token outlived by the session.
+      throw new UnauthorizedException('Sign in again to open this app');
+    }
+    return {
+      token: issued.token,
+      expires: issued.expiresAt,
+      userId: issued.username,
+      server: issued.portalUrl,
+      ssl: issued.portalUrl.startsWith('https:'),
     };
   }
 

@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtModule } from '@nestjs/jwt';
+import { JwtModule, JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
 import request from 'supertest';
@@ -17,10 +17,13 @@ import {
   PortalAuthError,
 } from '../portal/arcgis-portal.client';
 import { PortalAuthTokenService } from '../portal/portal-auth-token.service';
+import { PortalCredentialCryptoService } from '../portal/portal-credential-crypto.service';
+import { AppLaunchController } from './app-launch.controller';
 import { AppSessionController } from './app-session.controller';
 import { AppSessionService } from './app-session.service';
 import { PortalProxyController } from './portal-proxy.controller';
 import {
+  isActiveUserContent,
   isProxyRequestAllowed,
   resolveUpstreamUrl,
   rewriteLocation,
@@ -57,7 +60,18 @@ describe('app session + portal proxy (HTTP)', () => {
       application: {
         findUnique: jest.fn().mockResolvedValue({
           isActive: true,
-          config: { modules: [{ apps: [{ portalHostKey: 'gh' }] }] },
+          config: {
+            modules: [
+              {
+                apps: [
+                  { portalHostKey: 'gh' },
+                  {
+                    localShellPath: `${ORIGIN}/api/v1/app-launch/${APP}/water-quality`,
+                  },
+                ],
+              },
+            ],
+          },
         }),
       },
       portalCredential: {
@@ -78,9 +92,23 @@ describe('app session + portal proxy (HTTP)', () => {
           { name: 'default', ttl: 60_000, limit: 1000 },
         ]),
       ],
-      controllers: [AppSessionController, PortalProxyController],
+      controllers: [
+        AppSessionController,
+        PortalProxyController,
+        AppLaunchController,
+      ],
       providers: [
         AppSessionService,
+        {
+          provide: PortalCredentialCryptoService,
+          useFactory: () => {
+            const crypto = new PortalCredentialCryptoService(
+              new ConfigService(),
+            );
+            crypto.bindKey(Buffer.alloc(32, 7));
+            return crypto;
+          },
+        },
         { provide: PrismaService, useValue: prisma },
         { provide: ArcgisPortalClient, useValue: { generateToken } },
         { provide: PortalAuthTokenService, useValue: { issueToken } },
@@ -116,14 +144,19 @@ describe('app session + portal proxy (HTTP)', () => {
     return setCookie.split(';')[0];
   }
 
-  it('login verifies the user against the portal and sets an HttpOnly cookie without any token', async () => {
+  it('login verifies the user against the portal and sets an HttpOnly cookie without any readable token', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/app-auth/login')
       .set('Origin', ORIGIN)
       .send({ appKey: APP, username: 'alice', password: 'pw' })
       .expect(200);
     expect(generateToken).toHaveBeenCalledWith(
-      expect.objectContaining({ username: 'alice', referer: ORIGIN }),
+      expect.objectContaining({
+        username: 'alice',
+        referer: ORIGIN,
+        // The kept token lasts as long as the session.
+        expirationMinutes: 480,
+      }),
     );
     expect(res.body).toMatchObject({
       authenticated: true,
@@ -131,6 +164,12 @@ describe('app session + portal proxy (HTTP)', () => {
     });
     expect(JSON.stringify(res.body)).not.toContain('user-token');
     const cookie = String(res.headers['set-cookie']);
+    const payload = Buffer.from(
+      cookie.split(';')[0].split('=')[1].split('.')[1],
+      'base64url',
+    ).toString();
+    expect(payload).toContain('"ptk":"v1:');
+    expect(payload).not.toContain('user-token');
     expect(cookie).toMatch(new RegExp(`^rc_app_session_${APP}=`));
     expect(cookie).toContain('HttpOnly');
     expect(cookie).toContain('Secure');
@@ -278,6 +317,223 @@ describe('app session + portal proxy (HTTP)', () => {
       .post('/api/v1/app-auth/logout?appKey=Bad Key')
       .set('Origin', ORIGIN)
       .expect(400);
+  });
+
+  it("portal-token returns the user's own token, never the service account's", async () => {
+    generateToken.mockResolvedValueOnce({
+      token: 'user-token',
+      expiresAt: Date.now() + 3_600_000,
+    });
+    const cookie = await signIn();
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/app-auth/portal-token')
+      .set('X-Requested-With', 'fetch')
+      .set('Origin', ORIGIN)
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.body).toEqual({
+      token: 'user-token',
+      expires: expect.any(Number) as number,
+      userId: 'alice',
+      server: `${ORIGIN}/portal`,
+      ssl: true,
+    });
+    expect((res.body as { expires: number }).expires).toBeLessThanOrEqual(
+      Date.now() + 3_600_000,
+    );
+    expect(issueToken).not.toHaveBeenCalled();
+  });
+
+  it('portal-token needs the session, its own origin and an unexpired token', async () => {
+    const cookie = await signIn();
+    const post = () =>
+      request(app.getHttpServer())
+        .post('/api/v1/app-auth/portal-token')
+        .set('X-Requested-With', 'fetch');
+
+    await post().set('Origin', ORIGIN).send({ appKey: APP }).expect(401);
+    await post().set('Cookie', cookie).send({ appKey: APP }).expect(400);
+    await post()
+      .set('Origin', 'https://evil.example')
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(400);
+    // Another allowed origin cannot read a session signed in elsewhere.
+    await post()
+      .set('Origin', 'https://localhost:5181')
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(401);
+    // The cookie is per app.
+    await post()
+      .set('Origin', ORIGIN)
+      .set('Cookie', cookie)
+      .send({ appKey: 'health-mapping' })
+      .expect(401);
+
+    // The portal capped the token below the session and it has run out.
+    generateToken.mockResolvedValueOnce({
+      token: 'user-token',
+      expiresAt: Date.now() - 1,
+    });
+    const stale = await signIn();
+    await post()
+      .set('Origin', ORIGIN)
+      .set('Cookie', stale)
+      .send({ appKey: APP })
+      .expect(401);
+  });
+
+  it('portal-token asks sessions from before tokens were kept to sign in again', async () => {
+    const legacy = await app
+      .get(JwtService)
+      .signAsync(
+        { typ: 'app-session', app: APP, sub: 'alice', org: ORIGIN },
+        { secret: `${'x'.repeat(40)}::app-session`, expiresIn: '10m' },
+      );
+    const cookie = `rc_app_session_${APP}=${legacy}`;
+    // Still a valid session for the proxy...
+    await request(app.getHttpServer())
+      .get(`/api/v1/app-auth/session?appKey=${APP}`)
+      .set('Cookie', cookie)
+      .expect(200);
+    // ...but there is no user token to hand over.
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/app-auth/portal-token')
+      .set('X-Requested-With', 'fetch')
+      .set('Origin', ORIGIN)
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(401);
+    expect((res.body as { message: string }).message).toBe(
+      'Sign in again to open this app',
+    );
+  });
+
+  it('serves the launch page for known standalone apps only', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/app-launch/water-resources/water-quality`)
+      .expect(200);
+    expect(res.headers['content-type']).toContain('text/html');
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
+    const csp = String(res.headers['content-security-policy']);
+    const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
+    expect(nonce).toBeTruthy();
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).toContain("connect-src 'self'");
+    expect(res.text).toContain(`<script nonce="${nonce}">`);
+    expect(res.text).toContain('"appKey":"water-resources"');
+    expect(res.text).toContain('"path":"/water-quality/"');
+    expect(res.text).not.toContain('token":"');
+
+    await request(app.getHttpServer())
+      .get('/api/v1/app-launch/water-resources/crop-health')
+      .expect(404);
+    await request(app.getHttpServer())
+      .get('/api/v1/app-launch/water-resources/constructor')
+      .expect(404);
+    await request(app.getHttpServer())
+      .get('/api/v1/app-launch/Bad_Key/water-quality')
+      .expect(400);
+  });
+
+  it('keeps no token for an app that links to no standalone app', async () => {
+    prismaMock.application.findUnique.mockResolvedValueOnce({
+      isActive: true,
+      config: { modules: [{ apps: [{ portalHostKey: 'gh' }] }] },
+    });
+    const cookie = await signIn();
+    expect(generateToken).toHaveBeenCalledWith(
+      expect.objectContaining({ expirationMinutes: 2 }),
+    );
+    const payload = Buffer.from(
+      cookie.split('=')[1].split('.')[1],
+      'base64url',
+    ).toString();
+    expect(payload).not.toContain('ptk');
+    await request(app.getHttpServer())
+      .post('/api/v1/app-auth/portal-token')
+      .set('X-Requested-With', 'fetch')
+      .set('Origin', ORIGIN)
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(401);
+  });
+
+  it('portal-token only answers same-origin script requests', async () => {
+    const cookie = await signIn();
+    // No script header: a form post or link.
+    await request(app.getHttpServer())
+      .post('/api/v1/app-auth/portal-token')
+      .set('Origin', ORIGIN)
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(403);
+    // A same-site page on another subdomain.
+    await request(app.getHttpServer())
+      .post('/api/v1/app-auth/portal-token')
+      .set('X-Requested-With', 'fetch')
+      .set('Sec-Fetch-Site', 'same-site')
+      .set('Origin', ORIGIN)
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(403);
+    await request(app.getHttpServer())
+      .post('/api/v1/app-auth/portal-token')
+      .set('X-Requested-With', 'fetch')
+      .set('Sec-Fetch-Site', 'same-origin')
+      .set('Origin', ORIGIN)
+      .set('Cookie', cookie)
+      .send({ appKey: APP })
+      .expect(200);
+  });
+
+  it('proxy sends uploaded HTML or SVG as a sandboxed download, never a page', async () => {
+    const cookie = await signIn();
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html><script>steal()</script></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      }),
+    );
+    const html = await request(app.getHttpServer())
+      .get(`${PREFIX}/portal/sharing/rest/content/items/abc/data`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(html.headers['content-disposition']).toBe('attachment');
+    expect(html.headers['content-security-policy']).toBe('sandbox');
+    expect(html.headers['x-content-type-options']).toBe('nosniff');
+
+    fetchMock.mockResolvedValueOnce(
+      new Response('{"operationalLayers":[]}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const json = await request(app.getHttpServer())
+      .get(`${PREFIX}/portal/sharing/rest/content/items/abc/data?f=json`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(json.headers['content-disposition']).toBeUndefined();
+    expect(json.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('rate-limits portal-token per session, not for everyone behind one address', async () => {
+    const alice = await signIn();
+    const bob = await signIn();
+    const ask = (cookie: string) =>
+      request(app.getHttpServer())
+        .post('/api/v1/app-auth/portal-token')
+        .set('X-Requested-With', 'fetch')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+        .send({ appKey: APP });
+    for (let i = 0; i < 60; i += 1) await ask(alice).expect(200);
+    await ask(alice).expect(429);
+    await ask(bob).expect(200);
   });
 
   it('rejects a forged / admin-signed cookie', async () => {
@@ -598,6 +854,30 @@ describe('portal proxy rewrite helpers', () => {
       ORIGIN,
     );
     expect(resolveUpstreamUrl(ORIGIN, '../../x', '')?.origin).toBe(ORIGIN);
+  });
+
+  it('treats only uploaded HTML, SVG and XML as active user content', () => {
+    const item = 'portal/sharing/rest/content/items/abc';
+    expect(isActiveUserContent(`${item}/data`, 'text/html')).toBe(true);
+    expect(
+      isActiveUserContent(`${item}/resources/x.svg`, 'image/svg+xml'),
+    ).toBe(true);
+    expect(
+      isActiveUserContent(
+        `${item}/info/metadata/metadata.xml`,
+        'application/xml',
+      ),
+    ).toBe(true);
+    expect(
+      isActiveUserContent('sharing/rest/content/items/abc/data', 'text/html'),
+    ).toBe(true);
+    expect(isActiveUserContent(`${item}/data`, 'application/json')).toBe(false);
+    expect(isActiveUserContent(`${item}/resources/a.png`, 'image/png')).toBe(
+      false,
+    );
+    expect(isActiveUserContent('portal/apps/dashboards/abc', 'text/html')).toBe(
+      false,
+    );
   });
 
   it('blocks admin and mutating sharing calls, allows reads', () => {

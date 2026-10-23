@@ -44,6 +44,32 @@ export const SURVEY123_HOST_KEY = 's123';
 export const SURVEY123_ORIGIN = 'https://survey123.arcgis.com';
 const SURVEY123_METHODS = new Set(['GET', 'HEAD']);
 
+/** Files portal users upload to items: anyone who can publish controls them. */
+const USER_CONTENT_PATH =
+  /(?:^|\/)sharing\/rest\/content\/items\/[^/]+\/(?:data|resources|info)(?:\/|$)/i;
+const ACTIVE_CONTENT_TYPE =
+  /^\s*(?:text\/html|application\/xhtml\+xml|image\/svg\+xml|text\/xml|application\/xml)\b/i;
+
+/**
+ * Uploaded HTML/SVG/XML served on the app origin could run script there and
+ * read the user's portal token (/api/v1/app-auth/portal-token). Such files are
+ * sent as sandboxed downloads instead; apps read item data as JSON, not pages.
+ */
+export function isActiveUserContent(
+  restPath: string,
+  contentType: string,
+): boolean {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(restPath);
+  } catch {
+    decoded = restPath;
+  }
+  return (
+    USER_CONTENT_PATH.test(decoded) && ACTIVE_CONTENT_TYPE.test(contentType)
+  );
+}
+
 export function proxyPrefix(appKey: string, hostKey: string): string {
   return `${PORTAL_PROXY_ROUTE}/${appKey}/${hostKey}`;
 }

@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { assertPortalCredentialEncryptionKey } from './portal/portal-credential-crypto.service';
@@ -44,8 +45,20 @@ function assertJwtSecret(
 
 async function bootstrap() {
   // rawBody: the portal proxy forwards POST bodies byte-for-byte.
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
   const configService = app.get(ConfigService);
+
+  // Behind IIS/ARR every request comes from the proxy; without this the rate
+  // limits count all users as one address.
+  const trustProxy = configService.get<string>('TRUST_PROXY')?.trim();
+  if (trustProxy) {
+    app.set(
+      'trust proxy',
+      /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy,
+    );
+  }
 
   const nodeEnv = configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
 

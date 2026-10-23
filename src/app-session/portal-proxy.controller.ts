@@ -22,6 +22,7 @@ import {
   staticAssetPolicy,
 } from './portal-proxy.cache';
 import {
+  isActiveUserContent,
   isProxyRequestAllowed,
   proxyPrefix,
   resolveUpstreamUrl,
@@ -226,6 +227,11 @@ export class PortalProxyController {
     upstream.headers.forEach((value, key) => {
       if (!SKIP_HEADERS.has(key.toLowerCase())) forwarded[key] = value;
     });
+    forwarded['x-content-type-options'] = 'nosniff';
+    if (!survey123 && isActiveUserContent(restPath, type)) {
+      forwarded['content-disposition'] = 'attachment';
+      forwarded['content-security-policy'] = 'sandbox';
+    }
     const payload = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
 
     const policy = staticAssetPolicy(

@@ -67,6 +67,7 @@ npm run start:dev
 | `PORTAL_TOKEN_EXPIRATION_MINUTES` | No | Lifetime of broker-issued portal tokens (default `60`) |
 | `APP_LOGIN_PORTAL_HOST` | No | Portal credential key users sign in against (default `gh`) |
 | `APP_SESSION_MINUTES` | No | App sign-in session lifetime (default `480`) |
+| `TRUST_PROXY` | No | Express `trust proxy` behind IIS/ARR (hop count or proxy IPs) so rate limits see client IPs |
 | `PORTAL_PROXY_CACHE_MB` | No | Memory for cached static portal files in the proxy (default `64`, `0` = off) |
 | `MONITOR_*` | No | Status monitor and email alerts, see [Status monitor](#status-monitor) |
 
@@ -398,8 +399,9 @@ before expiry and are bound to the caller's origin. The broker is limited to
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/v1/app-auth/login` | `{ appKey, username, password }`: verifies the user's own portal account on `APP_LOGIN_PORTAL_HOST`, discards that token, sets HttpOnly `rc_app_session_<appKey>` (Path `/api/v1/`, SameSite=Lax) |
+| `POST` | `/api/v1/app-auth/login` | `{ appKey, username, password }`: verifies the user's own portal account on `APP_LOGIN_PORTAL_HOST`, keeps that token encrypted in the session when the app's config links to a [standalone app](#standalone-apps) (otherwise discards it), sets HttpOnly `rc_app_session_<appKey>` (Path `/api/v1/`, SameSite=Lax) |
 | `GET` | `/api/v1/app-auth/session?appKey=` | Current session or `401` |
+| `POST` | `/api/v1/app-auth/portal-token` | `{ appKey }`: the user's own portal token, for same-origin standalone apps. Needs the session, the Origin it signed in from, `X-Requested-With: fetch` and (when sent) `Sec-Fetch-Site: same-origin`; limited per session; `401` for sessions from before tokens were kept |
 | `POST` | `/api/v1/app-auth/logout?appKey=` | Clears that app's session (all, without `appKey`) |
 
 ### Portal proxy
@@ -426,6 +428,30 @@ account and needs no second sign-in. The forms are view-only: submissions hit
 `sharing/rest/oauth2/validateAppAccess`, which only reports whether the user may
 use an app; Survey123 will not open a form without it.
 
+
+### Standalone apps
+
+Some catalog apps on the app origin (Water Quality, Forest Health, Mining
+Inspection, Schools Demand) run their own portal OAuth and never use the
+proxy, so framed directly they ask for a second sign-in. A shell frames
+`/api/v1/app-launch/<appKey>/<app>` instead (as the item's `localShellPath`
+or `externalUrl`). That page reads the user's own token from
+`/api/v1/app-auth/portal-token` and hands it over the way each app accepts
+(`src/app-session/standalone-apps.ts`):
+
+- ArcGIS Maps SDK apps are framed with `arcgis-auth-origin`/`arcgis-auth-portal`
+  and get the token by the SDK's `arcgis:auth:requestCredential` message.
+- Schools Demand gets it posted to its own `/school/api/auth/portal-token`.
+
+The apps run with the user's own portal permissions, never the service
+account's. Without a token (signed out, older session) the app opens as before
+and asks for its own sign-in. Crop Health is not covered: it only takes a token
+through its sessionStorage internals.
+
+Any script on the origin can read a signed-in user's token, so the proxy serves
+uploaded item HTML, SVG and XML (`.../content/items/<id>/data|resources|info`) as
+sandboxed downloads and sends `nosniff` on everything. Logout clears the cookie
+but cannot revoke a token already handed out; it expires with the session.
 
 ### Shared typography
 
